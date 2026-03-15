@@ -1,142 +1,33 @@
-
-# Создам полностью новый index.html
-html_content = '''<!DOCTYPE html>
-<html lang="ru">
+<!DOCTYPE html>
+<html lang="kk">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Биология — Варианты тестов</title>
-  <link rel="stylesheet" href="style.css" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Биология тесті - Варианттар</title>
 </head>
 <body>
-  <!-- ====== БОКОВАЯ ПАНЕЛЬ ВАРИАНТОВ ====== -->
-  <aside id="variantsPanel" class="variants-panel">
-    <div class="variants-header">
-      <h3>Варианты</h3>
-      <button id="toggleVariantsBtn" aria-label="Свернуть панель">◀</button>
+    <div id="authOverlay">
+        <div class="auth-box">
+            <h2>🧬 Биология тесті</h2>
+            <input type="email" id="email" placeholder="Email">
+            <input type="password" id="password" placeholder="Құпия сөз">
+            <button id="authBtn">Кіру / Тіркелу</button>
+            <p id="authStatus"></p>
+        </div>
     </div>
-    <div id="variantsList" class="variants-list">
-      <!-- Варианты генерируются динамически -->
-    </div>
-  </aside>
 
-  <!-- ====== ОСНОВНОЙ КОНТЕНТ ====== -->
-  <main class="main-content" id="mainContent">
-    
-    <!-- Приветствие / Выбор варианта -->
-    <section id="welcomeSection" class="welcome-section">
-      <h1>Тесты по биологии</h1>
-      <p>Выберите вариант из боковой панели, чтобы начать</p>
-      <div class="variant-info">
-        <div class="info-card">
-          <span class="info-number">25</span>
-          <span class="info-label">одновыборочных</span>
-        </div>
-        <div class="info-card">
-          <span class="info-number">15</span>
-          <span class="info-label">многовыборочных</span>
-        </div>
-        <div class="info-card">
-          <span class="info-number">40</span>
-          <span class="info-label">всего вопросов</span>
-        </div>
-      </div>
-    </section>
-
-    <!-- Активный вариант (скрыт по умолчанию) -->
-    <section id="testSection" class="test-section" style="display: none;">
-      <div class="variant-header">
-        <h2 id="currentVariantName">Вариант 1</h2>
-        <div class="variant-progress">
-          <span id="answeredCount">Отвечено: 0/40</span>
-          <div class="progress-bar">
-            <div id="progressFill" style="width: 0%"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Контейнер для вопросов (скролл вниз) -->
-      <div id="questionsContainer" class="questions-container">
-        <!-- Вопросы генерируются динамически -->
-      </div>
-
-      <!-- Финальная секция -->
-      <div id="finishSection" class="finish-section">
-        <button id="finishBtn" class="finish-btn" disabled>
-          🏁 Завершить тест
-        </button>
-        <p id="finishHint" class="finish-hint">
-          Ответьте на все вопросы, чтобы завершить
-        </p>
-      </div>
-
-      <!-- Результаты (показываются после завершения) -->
-      <div id="resultsSection" class="results-section" style="display: none;">
-        <h2>Результаты</h2>
-        <div class="score-display">
-          <div class="score-circle">
-            <span id="scorePercent">0%</span>
-          </div>
-          <div class="score-details">
-            <div class="score-item correct">
-              <span class="score-icon">✓</span>
-              <span id="correctCount">0 правильных</span>
+    <div id="app" style="display:none;">
+        <div class="top-bar">
+            <div class="user-info">
+                <span id="userEmail"></span>
+                <button id="logoutBtn">Шығу</button>
             </div>
-            <div class="score-item wrong">
-              <span class="score-icon">✗</span>
-              <span id="wrongCount">0 неправильных</span>
-            </div>
-            <div class="score-item total">
-              <span class="score-icon">∑</span>
-              <span id="totalScore">0 баллов</span>
-            </div>
-          </div>
         </div>
         
-        <div id="detailedResults" class="detailed-results">
-          <!-- Детальный разбор -->
-        </div>
-
-        <button id="backToVariantBtn" class="secondary-btn">
-          ← Вернуться к варианту
-        </button>
-      </div>
-
-      <!-- Кнопка сброса варианта -->
-      <div class="reset-variant-wrapper">
-        <button id="resetVariantBtn" class="reset-variant-btn">
-          🔄 Сбросить вариант
-        </button>
-        <p class="reset-warning">Все ответы будут удалены</p>
-      </div>
-    </section>
-  </main>
-
-  <!-- ====== AUTH OVERLAY ====== -->
-  <div id="authOverlay">
-    <div class="authCard">
-      <h1>Доступ к тестам</h1>
-      <input id="email" type="email" placeholder="Email" />
-      <input id="password" type="password" placeholder="Пароль" />
-      <button id="authBtn">Войти / Зарегистрироваться</button>
-      <p id="authStatus" class="muted"></p>
+        <div id="sidebar"></div>
+        <div id="variantContent"></div>
     </div>
-  </div>
 
-  <!-- ====== WAITING OVERLAY ====== -->
-  <div id="waitOverlay" style="display: none;">
-    <div class="authCard">
-      <h1>⏳ Ожидание подтверждения</h1>
-      <p class="muted">Администратор проверит и откроет доступ</p>
-      <button id="signOutFromWait" class="small-ghost">Выйти</button>
-    </div>
-  </div>
-
-  <script type="module" src="app.js"></script>
+    <script type="module" src="app.js"></script>
 </body>
-</html>'''
-
-with open('/mnt/kimi/output/index.html', 'w', encoding='utf-8') as f:
-    f.write(html_content)
-
-print("✅ index.html создан")
+</html>
