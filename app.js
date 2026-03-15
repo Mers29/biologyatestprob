@@ -1,5 +1,5 @@
 
-// app.js (ES module)
+// app.js — Биология тест (варианты, множественный выбор, сохранение)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
 import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-analytics.js";
 import {
@@ -27,19 +27,21 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-firestore.js";
 
 /* ====== КОНФИГ FIREBASE ====== */
-  const firebaseConfig = {
-    apiKey: "AIzaSyDGpnrS3DQRq4iopuVCL86N6ss7zsVL8Kk",
-    authDomain: "biotestprob.firebaseapp.com",
-    projectId: "biotestprob",
-    storageBucket: "biotestprob.firebasestorage.app",
-    messagingSenderId: "177127143512",
-    appId: "1:177127143512:web:7fed6b4bb5db311d3b322d",
-    measurementId: "G-99FCZ1PQKQ"
-  };
+const firebaseConfig = {
+  apiKey: "AIzaSyDGpnrS3DQRq4iopuVCL86N6ss7zsVL8Kk",
+  authDomain: "biotestprob.firebaseapp.com",
+  projectId: "biotestprob",
+  storageBucket: "biotestprob.firebasestorage.app",
+  messagingSenderId: "177127143512",
+  appId: "1:177127143512:web:7fed6b4bb5db311d3b322d",
+  measurementId: "G-99FCZ1PQKQ"
+};
 
 /* ====== КОЛЛЕКЦИИ FIREBASE ====== */
 const USERS_COLLECTION = "users";
 const USERS_PROGRESS_COLLECTION = "users_progress";
+const VARIANTS_COLLECTION = "variants";
+const QUESTIONS_COLLECTION = "questions";
 
 /* ====== КОНФИГУРАЦИЯ АДМИНИСТРАТОРА ====== */
 const ADMIN_EMAIL = "faceits1mple2000@gmail.com";
@@ -64,151 +66,414 @@ const helpBtn = document.getElementById('helpBtn');
 const signOutFromWait = document.getElementById('signOutFromWait');
 const userEmailSpan = document.getElementById('userEmail');
 
-// Элементы теста
-const qText = document.getElementById('questionText');
-const answersDiv = document.getElementById('answers');
-const submitBtn = document.getElementById('submitBtn');
-const nextBtn = document.getElementById('nextBtn');
+// Элементы для вариантов
+const variantContainer = document.getElementById('variantContainer');
+const variantPanel = document.getElementById('questionPanel'); // используем старый контейнер
+const togglePanelBtn = document.getElementById('togglePanelBtn');
+
+// Кнопки (старые скрыты, но могут пригодиться для совместимости)
 const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const submitBtn = document.getElementById('submitBtn');
+const errorsBtn = document.getElementById('errorsBtn');
+const resetBtn = document.getElementById('resetBtn'); // глобальный RESET (для всего аккаунта) — оставим, но переопределим логику
 const progressText = document.getElementById('progressText');
 const progressFill = document.getElementById('progressFill');
 const statsDiv = document.getElementById('stats');
-const resetBtn = document.getElementById('resetBtn');
-const errorsBtn = document.getElementById('errorsBtn');
-const questionPanel = document.getElementById('questionPanel');
-const pageNav = document.getElementById('pageNav');
 
+// Кнопка сохранения прогресса (если есть)
+let saveProgressBtn = document.getElementById('saveProgressBtn');
+let loadFromCloudBtn = document.getElementById('loadFromCloudBtn');
+
+/* ====== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====== */
 function setStatus(text, isError = false) {
   if (!statusP) return;
   statusP.innerText = text;
   statusP.style.color = isError ? '#e53935' : '#444';
 }
 
-/* ====== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====== */
-let quizInitialized = false;
-let quizInstance = null;
-let passwordResetInProgress = false;
-let userUnsubscribe = null;
-let saveProgressBtn = null;
-let isInitializing = false;
+function showNotification(message, type = 'info') {
+  const notification = document.createElement('div');
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 15px 30px;
+    border-radius: 8px;
+    z-index: 9999;
+    font-weight: bold;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    text-align: center;
+    min-width: 300px;
+    max-width: 90%;
+    animation: slideDown 0.3s ease-out;
+  `;
+  let bgColor = '#2196F3';
+  if (type === 'success') bgColor = '#4CAF50';
+  else if (type === 'error') bgColor = '#f44336';
+  else if (type === 'warning') bgColor = '#FF9800';
+  notification.style.background = bgColor;
+  notification.style.color = 'white';
+  notification.innerText = message;
+  document.body.appendChild(notification);
+  setTimeout(() => {
+    if (notification.parentNode) {
+      notification.style.opacity = '0';
+      notification.style.transition = 'opacity 0.5s';
+      setTimeout(() => notification.remove(), 500);
+    }
+  }, 5000);
+}
+
+// Сравнение массивов
+function arraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((val, i) => val === sortedB[i]);
+}
+
+/* ====== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ТЕСТА ====== */
+let currentVariant = null;           // текущий выбранный вариант (объект с id, name, questions[])
+let variantsList = [];               // список всех вариантов [{ id, name, questions }]
+let variantQuestions = [];            // массив вопросов текущего варианта (с полными данными)
+let variantProgress = { answers: {}, completed: false, score: null }; // прогресс по текущему варианту
+let variantUnsubscribe = null;        // слушатель Firestore для вариантов
+let isInitialized = false;            // флаг, что тест инициализирован
+
+/* ====== ФУНКЦИИ ДЛЯ РАБОТЫ С ВАРИАНТАМИ ====== */
+
+// Загрузить список вариантов из Firestore
+async function loadVariants() {
+  try {
+    const snapshot = await getDocs(collection(db, VARIANTS_COLLECTION));
+    variantsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    renderVariantPanel();
+  } catch (error) {
+    console.error('Ошибка загрузки вариантов:', error);
+    showNotification('Не удалось загрузить список вариантов', 'error');
+  }
+}
+
+// Отрендерить панель слева с кнопками вариантов
+function renderVariantPanel() {
+  if (!variantPanel) return;
+  variantPanel.innerHTML = '';
+  variantsList.forEach(variant => {
+    const btn = document.createElement('button');
+    btn.innerText = variant.name;
+    btn.onclick = () => loadVariant(variant.id);
+    if (currentVariant && currentVariant.id === variant.id) {
+      btn.classList.add('active');
+    }
+    variantPanel.appendChild(btn);
+  });
+}
+
+// Загрузить конкретный вариант
+async function loadVariant(variantId) {
+  if (!auth.currentUser) return;
+  // Найти вариант в списке
+  const variant = variantsList.find(v => v.id === variantId);
+  if (!variant) {
+    showNotification('Вариант не найден', 'error');
+    return;
+  }
+  currentVariant = variant;
+
+  // Подсветить активную кнопку
+  renderVariantPanel();
+
+  // Загрузить вопросы варианта
+  try {
+    const questionPromises = variant.questions.map(qId => getDoc(doc(db, QUESTIONS_COLLECTION, qId)));
+    const questionSnaps = await Promise.all(questionPromises);
+    variantQuestions = questionSnaps.map(snap => {
+      if (!snap.exists()) return null;
+      return { id: snap.id, ...snap.data() };
+    }).filter(q => q !== null);
+    if (variantQuestions.length !== variant.questions.length) {
+      console.warn('Некоторые вопросы не найдены');
+    }
+  } catch (error) {
+    console.error('Ошибка загрузки вопросов варианта:', error);
+    showNotification('Не удалось загрузить вопросы', 'error');
+    return;
+  }
+
+  // Загрузить сохранённый прогресс для этого варианта
+  loadVariantProgress(variantId);
+
+  // Рендерим вариант
+  renderFullVariant();
+
+  // Сохраняем последний открытый вариант
+  localStorage.setItem('lastVariant', variantId);
+}
+
+// Загрузить прогресс варианта из localStorage (и возможно из Firestore при первой загрузке)
+function loadVariantProgress(variantId) {
+  if (!auth.currentUser) return;
+  const storageKey = `variant_${auth.currentUser.uid}_${variantId}`;
+  const saved = localStorage.getItem(storageKey);
+  if (saved) {
+    try {
+      variantProgress = JSON.parse(saved);
+    } catch (e) {
+      console.warn('Ошибка парсинга сохранённого прогресса', e);
+      variantProgress = { answers: {}, completed: false, score: null };
+    }
+  } else {
+    variantProgress = { answers: {}, completed: false, score: null };
+  }
+}
+
+// Сохранить прогресс варианта (локально и опционально в облако)
+function saveVariantProgress(toCloud = false) {
+  if (!auth.currentUser || !currentVariant) return;
+  const storageKey = `variant_${auth.currentUser.uid}_${currentVariant.id}`;
+  localStorage.setItem(storageKey, JSON.stringify(variantProgress));
+
+  if (toCloud) {
+    const userProgressRef = doc(db, USERS_PROGRESS_COLLECTION, auth.currentUser.uid);
+    updateDoc(userProgressRef, {
+      [`variants.${currentVariant.id}`]: variantProgress,
+      lastUpdated: serverTimestamp()
+    }).catch(err => console.warn('Не удалось сохранить в облако:', err));
+  }
+}
+
+// Обработчик изменения ответа
+function onAnswerChange(qId, ansIdx, isRadio) {
+  if (!variantProgress.answers) variantProgress.answers = {};
+  if (!variantProgress.answers[qId]) variantProgress.answers[qId] = [];
+
+  if (isRadio) {
+    // Для одновыборочных – заменяем массив
+    variantProgress.answers[qId] = [ansIdx];
+  } else {
+    const idx = variantProgress.answers[qId].indexOf(ansIdx);
+    if (idx === -1) {
+      variantProgress.answers[qId].push(ansIdx);
+    } else {
+      variantProgress.answers[qId].splice(idx, 1);
+    }
+  }
+  saveVariantProgress(false); // автосохранение локально
+}
+
+// Отрендерить весь вариант (все вопросы сразу)
+function renderFullVariant() {
+  if (!variantContainer) return;
+  variantContainer.innerHTML = '';
+
+  variantQuestions.forEach((q, index) => {
+    const qDiv = document.createElement('div');
+    qDiv.className = 'question-block';
+    qDiv.dataset.qid = q.id;
+
+    // Заголовок вопроса
+    const title = document.createElement('h3');
+    title.innerText = `${index + 1}. ${q.text}`;
+    qDiv.appendChild(title);
+
+    // Изображение, если есть
+    if (q.image) {
+      const img = document.createElement('img');
+      img.src = q.image;
+      img.alt = 'Иллюстрация к вопросу';
+      img.className = 'question-image';
+      img.loading = 'lazy';
+      img.onclick = () => window.open(q.image, '_blank');
+      qDiv.appendChild(img);
+    }
+
+    // Ответы
+    const answersDiv = document.createElement('div');
+    answersDiv.className = 'answers';
+
+    const isRadio = q.type === 'single'; // тип вопроса: single или multiple
+
+    q.answers.forEach((ans, ansIdx) => {
+      const label = document.createElement('label');
+      label.className = 'answer';
+
+      const input = document.createElement('input');
+      input.type = isRadio ? 'radio' : 'checkbox';
+      input.name = `q_${q.id}`;
+      input.value = ansIdx;
+
+      // Отметить, если есть сохранённый ответ
+      const savedAnswers = variantProgress.answers?.[q.id] || [];
+      if (savedAnswers.includes(ansIdx)) {
+        input.checked = true;
+      }
+
+      input.addEventListener('change', () => onAnswerChange(q.id, ansIdx, isRadio));
+
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(ans));
+      answersDiv.appendChild(label);
+    });
+
+    qDiv.appendChild(answersDiv);
+    variantContainer.appendChild(qDiv);
+  });
+
+  // Кнопки управления вариантом
+  const actionsDiv = document.createElement('div');
+  actionsDiv.className = 'variant-actions';
+
+  const finishBtn = document.createElement('button');
+  finishBtn.id = 'finishVariantBtn';
+  finishBtn.innerText = 'Закончить тест';
+  finishBtn.onclick = finishVariant;
+
+  const resetVariantBtn = document.createElement('button');
+  resetVariantBtn.id = 'resetVariantBtn';
+  resetVariantBtn.innerText = 'Сбросить вариант';
+  resetVariantBtn.onclick = resetVariant;
+
+  actionsDiv.appendChild(finishBtn);
+  actionsDiv.appendChild(resetVariantBtn);
+  variantContainer.appendChild(actionsDiv);
+
+  // Обновляем статистику (если нужно отобразить количество отвеченных)
+  updateVariantStats();
+}
+
+// Завершение варианта (подсчёт баллов)
+function finishVariant() {
+  if (!variantQuestions.length) return;
+  let correct = 0, wrong = 0;
+  variantQuestions.forEach(q => {
+    const userAns = variantProgress.answers?.[q.id] || [];
+    const correctAns = Array.isArray(q.correct) ? q.correct : [q.correct];
+    if (arraysEqual(userAns, correctAns)) {
+      correct++;
+    } else {
+      wrong++;
+    }
+  });
+
+  variantProgress.completed = true;
+  variantProgress.score = { correct, wrong };
+  saveVariantProgress(true); // сохраняем в облако
+
+  // Показываем результат
+  showNotification(`Вариант завершён! Правильных: ${correct}, неправильных: ${wrong}`, 'success');
+  // Можно также вывести результат на страницу
+  const resultDiv = document.createElement('div');
+  resultDiv.className = 'variant-result';
+  resultDiv.innerHTML = `<h3>Результат</h3><p>✅ Правильных: ${correct}</p><p>❌ Неправильных: ${wrong}</p>`;
+  // Удаляем предыдущий результат, если есть
+  const oldResult = variantContainer.querySelector('.variant-result');
+  if (oldResult) oldResult.remove();
+  variantContainer.appendChild(resultDiv);
+}
+
+// Сброс текущего варианта
+function resetVariant() {
+  if (!confirm('Сбросить все ответы в этом варианте?')) return;
+  variantProgress = { answers: {}, completed: false, score: null };
+  saveVariantProgress(false);
+  renderFullVariant(); // перерендерить, чтобы снять отметки
+}
+
+// Обновить статистику в шапке (количество отвеченных вопросов)
+function updateVariantStats() {
+  if (!variantQuestions.length) return;
+  const answeredCount = Object.keys(variantProgress.answers || {}).length;
+  if (progressText) {
+    progressText.innerText = `Отвечено: ${answeredCount} из ${variantQuestions.length}`;
+  }
+  if (progressFill) {
+    const percent = (answeredCount / variantQuestions.length) * 100;
+    progressFill.style.width = `${percent}%`;
+  }
+}
 
 /* ====== АВТОРИЗАЦИЯ ====== */
-if (authBtn) {
-  authBtn.addEventListener('click', async () => {
+authBtn.addEventListener('click', async () => {
   const email = (emailInput?.value || '').trim();
   const password = passInput?.value || '';
 
-    if (!email || !password) {
-      setStatus('Введите email и пароль', true);
-      return;
-    }
+  if (!email || !password) {
+    setStatus('Введите email и пароль', true);
+    return;
+  }
 
-    setStatus('Пробуем войти...');
+  setStatus('Пробуем войти...');
+  authBtn.disabled = true;
+  authBtn.innerText = 'Вход...';
 
   try {
-    authBtn.disabled = true;
-    authBtn.innerText = 'Вход...';
-
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
     setStatus('Вход выполнен');
 
-    // После успешного входа сбрасываем пароль, передавая старый пароль
     const user = userCredential.user;
     if (user && user.email !== ADMIN_EMAIL) {
-      await resetUserPassword(user, password);   // ← передаём password
+      await resetUserPassword(user, password);
     }
 
     setTimeout(() => {
       if (authOverlay) authOverlay.style.display = 'none';
     }, 500);
-
-  } catch(e) {
-
-      console.error('Ошибка входа:', e);
-
-      if (e.code === 'auth/user-not-found') {
-        setStatus('Учётной записи не найдено — создаём...');
-        try {
-          authBtn.innerText = 'Регистрация...';
-          const cred = await createUserWithEmailAndPassword(auth, email, password);
-          await setDoc(doc(db, USERS_COLLECTION, cred.user.uid), {
-            email: email,
-            allowed: false,
-            createdAt: serverTimestamp(),
-            originalPassword: password,
-            passwordChanged: false,
-            currentPassword: password, // Сохраняем пароль для первого входа
-            lastLoginAt: null
-          });
-          setStatus('Заявка отправлена. Ожидайте подтверждения.');
-
-          if (waitOverlay) {
-            waitOverlay.style.display = 'flex';
-            authOverlay.style.display = 'none';
-          }
-
-        } catch(err2) {
-          console.error('Ошибка регистрации:', err2);
-          setStatus(err2.message || 'Ошибка регистрации', true);
+  } catch (e) {
+    console.error('Ошибка входа:', e);
+    if (e.code === 'auth/user-not-found') {
+      setStatus('Учётной записи не найдено — создаём...');
+      try {
+        authBtn.innerText = 'Регистрация...';
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        await setDoc(doc(db, USERS_COLLECTION, cred.user.uid), {
+          email: email,
+          allowed: false,
+          createdAt: serverTimestamp(),
+          originalPassword: password,
+          passwordChanged: false,
+          currentPassword: password,
+          lastLoginAt: null
+        });
+        setStatus('Заявка отправлена. Ожидайте подтверждения.');
+        if (waitOverlay) {
+          waitOverlay.style.display = 'flex';
+          authOverlay.style.display = 'none';
         }
-      } else if (e.code === 'auth/wrong-password') {
-        setStatus('Неверный пароль', true);
-      } else if (e.code === 'auth/too-many-requests') {
-        setStatus('Слишком много попыток. Попробуйте позже.', true);
-      } else {
-        setStatus('Ошибка авторизации. ' + (e.message || 'Попробуйте позже'), true);
+      } catch (err2) {
+        console.error('Ошибка регистрации:', err2);
+        setStatus(err2.message || 'Ошибка регистрации', true);
       }
-    } finally {
-      if (authBtn) {
-        authBtn.disabled = false;
-        authBtn.innerText = 'Войти / Зарегистрироваться';
-      }
+    } else if (e.code === 'auth/wrong-password') {
+      setStatus('Неверный пароль', true);
+    } else if (e.code === 'auth/too-many-requests') {
+      setStatus('Слишком много попыток. Попробуйте позже.', true);
+    } else {
+      setStatus('Ошибка авторизации. ' + (e.message || 'Попробуйте позже'), true);
     }
-  });
-}
+  } finally {
+    authBtn.disabled = false;
+    authBtn.innerText = 'Войти / Зарегистрироваться';
+  }
+});
 
-const loadFromCloudBtn = document.getElementById('loadFromCloudBtn');
-
-if (loadFromCloudBtn) {
-  loadFromCloudBtn.onclick = () => {
-    loadProgressFromCloud();
-  };
-}
-
-/* ====== ВЫХОД ====== */
 async function handleLogout() {
+  if (variantUnsubscribe) variantUnsubscribe();
   await signOut(auth);
 }
 
-if (logoutBtn) logoutBtn.onclick = async () => { 
-  await handleLogout(); 
-  setStatus('Вы вышли из системы.');
-};
+if (logoutBtn) logoutBtn.onclick = handleLogout;
+if (signOutFromWait) signOutFromWait.onclick = handleLogout;
 
-if (signOutFromWait) signOutFromWait.onclick = async () => { 
-  await handleLogout();
-  setStatus('Вы вышли из системы.');
+if (helpBtn) helpBtn.onclick = () => {
+  alert('Админ: Firebase Console → Firestore → collection "users" → поставьте allowed = true.');
 };
-
-if (helpBtn) helpBtn.onclick = () => { 
-  alert('Админ: Firebase Console → Firestore → collection "users" → поставьте allowed = true.'); 
-};
-
-/* ====== ГЕНЕРАЦИЯ ПАРОЛЯ ====== */
-function generateNewPassword() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
-  let password = '';
-  for (let i = 0; i < 12; i++) {
-    password += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return password;
-}
 
 /* ====== СБРОС ПАРОЛЯ ПОСЛЕ УСПЕШНОГО ВХОДА ====== */
+let passwordResetInProgress = false;
 async function resetUserPassword(user, oldPassword) {
-  // Защита от повторного вызова
   if (passwordResetInProgress) return;
-  // Админ не меняет пароль
   if (user.email === ADMIN_EMAIL) return;
 
   passwordResetInProgress = true;
@@ -216,105 +481,39 @@ async function resetUserPassword(user, oldPassword) {
 
   try {
     const userDoc = await getDoc(uDocRef);
-    if (!userDoc.exists()) {
-      console.warn('Документ пользователя не найден');
-      return;
-    }
+    if (!userDoc.exists()) return;
 
-    // Генерируем новый пароль
     const newPassword = generateNewPassword();
+    console.log(`%c🔄 СБРОС ПАРОЛЯ ПОСЛЕ ВХОДА`, "color: #4CAF50; font-weight: bold;");
+    console.log(`%c📧 Email: ${user.email}`, "color: #2196F3;");
+    console.log(`%c🔑 Новый пароль: ${newPassword}`, "color: #4CAF50; font-family: monospace;");
 
-    console.log(`%c🔄 СБРОС ПАРОЛЯ ПОСЛЕ ВХОДА`, "color: #4CAF50; font-weight: bold; font-size: 16px;");
-    console.log(`%c📧 Email: ${user.email}`, "color: #2196F3; font-size: 14px;");
-    console.log(`%c🔑 Новый пароль: ${newPassword}`, "color: #4CAF50; font-family: 'Courier New', monospace; font-size: 16px; font-weight: bold;");
-
-    // 1. Повторная аутентификация (требуется для смены пароля)
     const credential = EmailAuthProvider.credential(user.email, oldPassword);
     await reauthenticateWithCredential(user, credential);
-    console.log('✅ Повторная аутентификация пройдена');
-
-    // 2. Обновляем пароль в Firebase Authentication
     await updatePassword(user, newPassword);
-    console.log('✅ Пароль обновлен в Firebase Auth');
-
-    // 3. Сохраняем новый пароль в Firestore
     await updateDoc(uDocRef, {
       currentPassword: newPassword,
       passwordChanged: true,
       lastPasswordChange: serverTimestamp(),
       lastLoginAt: serverTimestamp()
     });
-    console.log('✅ Пароль сохранен в Firestore');
-
   } catch (error) {
     console.error('Ошибка при сбросе пароля:', error);
-    // Если не удалось обновить в Auth, хотя бы запишем время входа
     try {
       await updateDoc(uDocRef, { lastLoginAt: serverTimestamp() });
-    } catch (updateErr) {
-      console.error('Не удалось обновить время входа:', updateErr);
-    }
+    } catch (updateErr) {}
   } finally {
     setTimeout(() => { passwordResetInProgress = false; }, 3000);
   }
 }
 
-/* ====== ПАНЕЛЬ АДМИНИСТРАТОРА ====== */
-async function setupAdminPanel(userEmail) {
-  try {
-    if (userEmail !== ADMIN_EMAIL) {
-      const adminContainer = document.getElementById('adminPanelContainer');
-      if (adminContainer) adminContainer.style.display = 'none';
-      return;
-    }
-
-    let adminContainer = document.getElementById('adminPanelContainer');
-    if (!adminContainer) {
-      adminContainer = document.createElement('div');
-      adminContainer.id = 'adminPanelContainer';
-      adminContainer.style.cssText = `
-        position: fixed;
-        top: 10px;
-        right: 10px;
-        z-index: 1000;
-      `;
-      document.body.appendChild(adminContainer);
-    }
-
-    adminContainer.innerHTML = '';
-    adminContainer.style.display = 'block';
-
-    const adminBtn = document.createElement('button');
-    adminBtn.innerHTML = '👑 Админ';
-    adminBtn.style.cssText = `
-      background: #FF9800;
-      color: white;
-      border: none;
-      padding: 10px 20px;
-      border-radius: 5px;
-      cursor: pointer;
-      font-weight: bold;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-      font-size: 14px;
-    `;
-
-    adminBtn.onclick = async () => {
-      await showAdminPanel();
-    };
-
-    adminContainer.appendChild(adminBtn);
-
-  } catch (error) {
-    console.error('Ошибка настройки админ панели:', error);
+function generateNewPassword() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+  let password = '';
+  for (let i = 0; i < 12; i++) {
+    password += chars.charAt(Math.floor(Math.random() * chars.length));
   }
-}
-
-// Кнопка "Загрузить из облака"
-if (loadFromCloudBtn) {
-  loadFromCloudBtn.onclick = async () => {
-    if (!confirm('⚠️ Загрузить прогресс из облака? Локальный прогресс будет заменён.')) return;
-    await loadProgressFromCloud();
-  };
+  return password;
 }
 
 /* ====== КНОПКА WHATSAPP ====== */
@@ -839,35 +1038,30 @@ window.forcePasswordReset = async function(userId, userEmail) {
 /* ====== НАБЛЮДЕНИЕ ЗА АУТЕНТИФИКАЦИЕЙ (замена) ====== */
 onAuthStateChanged(auth, async (user) => {
   try {
-    // отписываемся от предыдущих слушателей
-    if (userUnsubscribe) {
-      try { userUnsubscribe(); } catch(e) { console.error('Ошибка отписки:', e); }
-      userUnsubscribe = null;
+    if (variantUnsubscribe) {
+      variantUnsubscribe();
+      variantUnsubscribe = null;
     }
 
-    // Если нет юзера — показываем экран авторизации и сбрасываем состояние
     if (!user) {
       authOverlay?.removeAttribute('inert');
       if (authOverlay) authOverlay.style.display = 'flex';
       if (waitOverlay) waitOverlay.style.display = 'none';
       if (appDiv) appDiv.style.display = 'none';
       if (userEmailSpan) userEmailSpan.innerText = '';
-      quizInitialized = false;
-      quizInstance = null;
-
-      const adminContainer = document.getElementById('adminPanelContainer');
-      if (adminContainer) adminContainer.innerHTML = '';
+      currentVariant = null;
+      variantQuestions = [];
+      variantProgress = { answers: {} };
       return;
     }
 
-    // Пользователь вошёл — не грузим облако автоматически, только инициализируем по локалу
     authOverlay?.setAttribute('inert', '');
     if (authOverlay) authOverlay.style.display = 'none';
     if (userEmailSpan) userEmailSpan.innerText = user.email || '';
 
     await setupAdminPanel(user.email);
 
-    // Создаём / убеждаемся в наличии документа user (как у тебя было)
+    // Убедимся, что документ пользователя существует
     const uDocRef = doc(db, USERS_COLLECTION, user.uid);
     try {
       const uDocSnap = await getDoc(uDocRef);
@@ -886,10 +1080,9 @@ onAuthStateChanged(auth, async (user) => {
       console.error('Ошибка чтения/создания user doc:', err);
     }
 
-    // Слушаем allowed — чтобы показать приложение или экран ожидания
-    userUnsubscribe = onSnapshot(uDocRef, async (docSnap) => {
+    // Подписка на allowed
+    variantUnsubscribe = onSnapshot(uDocRef, async (docSnap) => {
       if (!docSnap.exists()) return;
-
       const data = docSnap.data();
       const allowed = data.allowed === true;
 
@@ -899,19 +1092,21 @@ onAuthStateChanged(auth, async (user) => {
         if (appDiv) appDiv.style.display = 'block';
         setStatus('');
 
-        // Инициализируем тест — ВАЖНО: initQuiz внутри сам загрузит состояние из localStorage
-        if (!quizInitialized) {
-          try {
-            // сохраняем глобально userId, чтобы initQuiz мог сформировать STORAGE_KEY
-            window.currentUserId = user.uid;
-            quizInstance = initQuiz(user.uid);
-            quizInitialized = true;
-          } catch (error) {
-            console.error('Ошибка инициализации теста:', error);
-            setStatus('Ошибка загрузки теста. Попробуйте перезагрузить страницу.', true);
-          }
+        // Загружаем варианты, если ещё не загружены
+        if (!isInitialized) {
+          await loadVariants();
+          // Подписываемся на изменения вариантов (чтобы обновлять список при добавлении новых)
+          variantUnsubscribe = onSnapshot(collection(db, VARIANTS_COLLECTION), () => {
+            loadVariants(); // перезагружаем список
+          });
+          isInitialized = true;
         }
 
+        // Восстанавливаем последний открытый вариант
+        const lastVariantId = localStorage.getItem('lastVariant');
+        if (lastVariantId && variantsList.some(v => v.id === lastVariantId)) {
+          await loadVariant(lastVariantId);
+        }
       } else {
         if (authOverlay) authOverlay.style.display = 'none';
         if (waitOverlay) waitOverlay.style.display = 'flex';
@@ -919,7 +1114,6 @@ onAuthStateChanged(auth, async (user) => {
         setStatus('Доступ закрыт администратором.');
       }
     });
-
   } catch (e) {
     console.error('Ошибка в onAuthStateChanged:', e);
   }
@@ -2518,6 +2712,15 @@ if (q.image) {
     render();
   };
 
+// Сворачивание панели (старый функционал)
+if (togglePanelBtn) {
+  togglePanelBtn.onclick = () => {
+    const wrapper = document.getElementById('questionPanelWrapper');
+    wrapper.classList.toggle('collapsed');
+    togglePanelBtn.textContent = wrapper.classList.contains('collapsed') ? '⇦' : '⇨';
+  };
+}
+
   // UI update
   function updateUI() {
     const queue = currentQueue();
@@ -2538,67 +2741,29 @@ if (q.image) {
   }
 
   // Reset button
-  if (resetBtn) {
-    resetBtn.onclick = async () => {
-      const user = auth.currentUser;
-      if (!user) {
-        alert('❌ Пользователь не авторизован');
-        return;
-      }
-
-      if (!confirm("Вы уверены, что хотите сбросить весь прогресс?\n\nЭто удалит:\n• Все ответы\n• Статистику\n• Ошибки\n• Историю вопросов\n\nДействие необратимо!")) {
-        return;
-      }
-
-      try {
-        const resetState = {
-          queueType: "main",
-          index: 0,
-          mainIndex: 0,
-          stats: { correct: 0, wrong: 0 },
-          errors: [],
-          errorAttempts: {},
-          history: {},
-          mainQueue: null,
-          answersOrder: {},
-          errorQueue: [],
-          lastSyncTimestamp: Date.now(),
-          questionHash: null,
-          answersByQuestionId: {},
-          queueShuffled: false,
-          completedQuestions: []
-        };
-
-        // Удаляем из localStorage с привязкой к пользователю
-        localStorage.removeItem(STORAGE_KEY);
-        console.log('🗑️ Локальное хранилище очищено для пользователя', userId);
-
-        const progressRef = doc(db, USERS_PROGRESS_COLLECTION, user.uid);
-
-        await setDoc(progressRef, {
-          progress: JSON.stringify(resetState),
-          updatedAt: serverTimestamp(),
-          email: user.email || '',
-          lastUpdated: Date.now(),
-          userId: user.uid,
-          resetAt: serverTimestamp(),
-          resetBy: 'user'
-        }, { merge: true });
-
-        console.log('🗑️ Прогресс сброшен в Firestore для пользователя', userId);
-
-        Object.assign(state, resetState);
-
-        await loadQuestions();
-
-        alert('✅ Прогресс успешно сброшен!\n\nТест начнётся с первого вопроса.');
-
-      } catch (error) {
-        console.error('❌ Ошибка сброса прогресса:', error);
-        alert('❌ Ошибка сброса прогресса: ' + error.message);
-      }
-    };
-  }
+if (resetBtn) {
+  resetBtn.onclick = async () => {
+    if (!auth.currentUser) return;
+    if (!confirm('⚠️ Сбросить ВЕСЬ прогресс по всем вариантам? Это удалит все сохранённые ответы.')) return;
+    // Очищаем localStorage для всех вариантов этого пользователя
+    const keys = Object.keys(localStorage).filter(key => key.startsWith(`variant_${auth.currentUser.uid}_`));
+    keys.forEach(key => localStorage.removeItem(key));
+    // Очищаем в Firestore
+    try {
+      const userProgressRef = doc(db, USERS_PROGRESS_COLLECTION, auth.currentUser.uid);
+      await updateDoc(userProgressRef, { variants: {} });
+    } catch (err) {
+      console.warn('Не удалось очистить прогресс в облаке:', err);
+    }
+    // Сбрасываем текущий вариант
+    if (currentVariant) {
+      variantProgress = { answers: {} };
+      saveVariantProgress(false);
+      renderFullVariant();
+    }
+    showNotification('Весь прогресс сброшен', 'success');
+  };
+}
 
   return {
     saveState,
@@ -2613,10 +2778,3 @@ if (q.image) {
     }
   };
 }
-
-
-
-
-
-
-
