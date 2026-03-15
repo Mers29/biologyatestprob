@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Биология — тест (защищённый)</title>
+  <link rel="stylesheet" href="style.css" />
+  
+  <!-- ====== Встроенный стиль панели и адаптивность ====== -->
+  <style>
+    /* ====== Вертикальная панель слева ====== */
+    #questionPanelWrapper {
+      position: fixed;
+      top: 50px;
+      left: 0;
+      width: 60px;
+      height: calc(100vh - 60px);
+      background: #f5f5f5;
+      padding: 5px;
+      border-right: 1px solid #ccc;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+      z-index: 100;
+      transition: width 0.3s;
+    }
+
+    #questionPanelWrapper.collapsed { 
+      width: 20px; 
+    }
+
+    #questionPanelWrapper.collapsed #questionPanel,
+    #questionPanelWrapper.collapsed #pageNav,
+    #questionPanelWrapper.collapsed #resetWrapper {
+      display: none;
+    }
+
+    #togglePanelBtn {
+      margin-bottom: 10px;
+      cursor: pointer;
+      padding: 3px 6px;
+      font-size: 14px;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+    }
+
+  #questionPanel, #pageNav, #resetWrapper {
+      transition: all 0.3s ease;
+}
+
+    #questionPanel {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      overflow-y: auto;
+      flex-grow: 1;
+      text-align: center;
+      width: 100%;
+      padding: 5px 0;
+    }
+
+    #questionPanel button {
+      flex: 0 0 auto;
+      width: 45px;
+      height: 45px;
+      min-width: 45px;
+      min-height: 45px;
+      max-width: 45px;
+      max-height: 45px;
+      border-radius: 50%;
+      border: 1px solid #ccc;
+      cursor: pointer;
+      background: #eee;
+      color: #000;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    #questionPanel button:hover {
+      transform: scale(1.05);
+    }
+
+    #questionPanel button.correct { 
+      background: #4CAF50; 
+      color: #fff; 
+      border-color: #4CAF50;
+    }
+    
+    #questionPanel button.wrong { 
+      background: #e53935; 
+      color: #fff; 
+      border-color: #e53935;
+    }
+
+    #pageNav {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      justify-content: center;
+      width: 100%;
+    }
+
+    #pageNav button {
+      padding: 3px 6px;
+      cursor: pointer;
+      border-radius: 3px;
+      border: 1px solid #ccc;
+      background: #eee;
+      font-size: 12px;
+      min-width: 25px;
+    }
+
+    #pageNav button.active { 
+      background: #007bff; 
+      color: #fff; 
+      border-color: #007bff;
+    }
+
+    #resetWrapper {
+      margin-top: 8px;
+      width: 100%;
+      display: flex;
+      justify-content: center;
+    }
+
+    #resetBtn {
+      width: 50px;
+      padding: 3px 5px;
+      cursor: pointer;
+      border-radius: 3px;
+      border: 1px solid #f00;
+      background: #ff4d4d;
+      color: #fff;
+      font-size: 12px;
+    }
+
+    /* ====== Основной контент ====== */
+     .app {
+      padding-left: 70px;
+      padding-right: 15px;
+      max-width: 1000px;
+      min-height: calc(100vh - 30px);
+      transition: padding-left 0.3s ease;
+    }
+
+    .header {
+      margin-bottom: 15px;
+    }
+
+    .card {
+      margin-bottom: 15px;
+      padding: 20px;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .controls button {
+      margin-right: 6px;
+      padding: 8px 12px;
+      font-size: 16px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    /* ====== Панель администратора ====== */
+    #adminPanelContainer {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+    }
+
+    #adminPanelContainer button {
+      background: #FF9800;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      transition: all 0.2s;
+    }
+
+    #adminPanelContainer button:hover {
+      background: #F57C00;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+
+    /* ====== Модальное окно администратора ====== */
+    .admin-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 9999;
+      animation: fadeIn 0.3s;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .admin-modal-content {
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      max-width: 600px;
+      max-height: 80vh;
+      overflow-y: auto;
+      width: 90%;
+      position: relative;
+      animation: slideIn 0.3s;
+    }
+
+    @keyframes slideIn {
+      from { transform: translateY(-20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    .admin-modal h3 {
+      margin-top: 0;
+      color: #333;
+      border-bottom: 2px solid #FF9800;
+      padding-bottom: 10px;
+      margin-bottom: 15px;
+    }
+
+    .admin-user-item {
+      border-bottom: 1px solid #eee;
+      padding: 12px 0;
+      font-size: 14px;
+    }
+
+    .admin-user-item:last-child {
+      border-bottom: none;
+    }
+
+    .admin-user-item strong {
+      color: #333;
+      font-size: 15px;
+      display: inline-block;
+      margin-bottom: 5px;
+    }
+
+    .admin-user-item code {
+      background: #f5f5f5;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      margin: 5px 0;
+      display: inline-block;
+      border: 1px solid #ddd;
+      color: #d63384;
+    }
+
+    .admin-status {
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+      margin-left: 10px;
+      display: inline-block;
+    }
+
+    .status-allowed {
+      background: #4CAF50;
+      color: white;
+    }
+
+    .status-pending {
+      background: #FF9800;
+      color: white;
+    }
+
+    .close-modal {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: #f44336;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .close-modal:hover {
+      background: #d32f2f;
+    }
+
+    .force-reset-btn {
+      background: #2196F3;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .force-reset-btn:hover {
+      background: #1976D2;
+    }
+
+    hr {
+      border: none;
+      height: 1px;
+      background: #eee;
+      margin: 10px 0;
+    }
+
+    /* ====== Уведомление о новом пароле ====== */
+    .password-alert {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #4CAF50;
+      color: white;
+      padding: 15px;
+      border-radius: 8px;
+      z-index: 10000;
+      max-width: 400px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      animation: slideInRight 0.5s;
+    }
+
+    @keyframes slideInRight {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    .password-alert strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 16px;
+    }
+
+    .password-alert code {
+      font-family: 'Courier New', monospace;
+      font-size: 18px;
+      background: rgba(0,0,0,0.2);
+      padding: 5px 10px;
+      border-radius: 4px;
+      margin: 5px 0;
+      display: inline-block;
+      font-weight: bold;
+    }
+
+    .password-alert small {
+      font-size: 12px;
+      opacity: 0.9;
+    }
+
+    .close-alert {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      background: none;
+      border: none;
+      color: white;
+      cursor: pointer;
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    /* ====== Адаптивность для телефонов ====== */
+    @media (max-width: 600px) {
+      #questionPanelWrapper {
+        width: 50px;
+        padding: 4px;
+        top: 40px;
+        height: calc(100vh - 50px);
+      }
+
+      #questionPanel button {
+        width: 40px;
+        height: 40px;
+        font-size: 13px;
+      }
+
+      #pageNav button {
+        padding: 2px 4px;
+        font-size: 11px;
+        min-width: 20px;
+      }
+
+      #resetBtn {
+        width: 45px;
+        font-size: 11px;
+        padding: 2px 4px;
+      }
+
+      .app {
+        margin-left:60px;
+        padding: 10px;
+      }
+
+      .controls button {
+        padding: 6px 10px;
+        font-size: 14px;
+        margin-bottom: 5px;
+      }
+
+      #questionText {
+        font-size: 18px;
+      }
+
+      .answer {
+        font-size: 16px;
+        padding: 8px;
+      }
+
+      #adminPanelContainer {
+        top: 5px;
+        right: 5px;
+      }
+
+      #adminPanelContainer button {
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+
+      .admin-modal-content {
+        width: 95%;
+        max-height: 70vh;
+        padding: 15px;
+      }
+
+      .admin-user-item {
+        font-size: 13px;
+      }
+
+      .admin-user-item code {
+        font-size: 12px;
+        padding: 3px 6px;
+      }
+
+      .password-alert {
+        top: 10px;
+        right: 10px;
+        left: 10px;
+        max-width: none;
+      }
+    }
+
+    /* ====== Стили для оверлеев ====== */
+    #authOverlay, #waitOverlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.95);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+
+    .authCard {
+      background: white;
+      padding: 30px;
+      border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      max-width: 400px;
+      width: 90%;
+      text-align: center;
+    }
+
+    .authCard h1 {
+      margin-top: 0;
+      color: #333;
+      margin-bottom: 20px;
+    }
+
+    .authCard input {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 15px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+
+    .authCard button {
+      width: 100%;
+      padding: 12px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      font-size: 16px;
+      cursor: pointer;
+      margin-bottom: 15px;
+    }
+
+    .muted {
+      color: #666;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .small-ghost {
+      background: transparent;
+      color: #666;
+      border: 1px solid #ddd;
+      padding: 8px 12px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+  <style>
+#loadFromCloudBtn {
+    background: #2196F3 !important;
+    color: white !important;
+    border: none !important;
+    padding: 8px 16px !important;
+    border-radius: 4px !important;
+    cursor: pointer !important;
+    font-weight: bold !important;
+    transition: background 0.3s !important;
+    margin-left: 10px !important;
+}
+
+#loadFromCloudBtn:hover {
+    background: #1976D2 !important;
+}
+
+#loadFromCloudBtn:disabled {
+    background: #BBDEFB !important;
+    cursor: not-allowed !important;
+}
+</style>
+
+  <!-- ====== Вертикальная панель вопросов ====== -->
+  <div id="questionPanelWrapper">
+    <button id="togglePanelBtn" aria-label="Свернуть панель" title="Свернуть панель">⇨</button>
+    <div id="questionPanel" role="navigation" aria-label="Панель вопросов"></div>
+    <div id="pageNav" aria-label="Навигация по страницам"></div>
+    <div id="resetWrapper">
+      <button id="resetBtn" title="Сбросить весь прогресс">RESET</button>
+    </div>
+  </div>
+
+  <!-- ====== Основное окно теста (скрываем по умолчанию) ====== -->
+  <main class="app" id="app" style="display:none" role="main">
+    <header class="header">
+      <div id="topRow" style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div id="progressText" aria-live="polite">Вопрос 1 из 1</div>
+          <div class="progress-bar" aria-hidden="true">
+            <div id="progressFill" style="width:0%"></div>
+          </div>
+        </div>
+        <div id="userControls" style="display:flex; gap:8px; align-items:center;">
+          <div id="userEmail" style="font-size:14px; color:#444" aria-live="polite"></div>
+          <button id="logoutBtn" class="secondary">Выйти</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="card" aria-labelledby="questionText">
+      <h2 id="questionText">Тест будет показан после подтверждения</h2>
+      <div id="answers" role="list"></div>
+    </section>
+
+    <div class="controls" role="region" aria-label="Управление тестом">
+      <button id="prevBtn">Предыдущий</button>
+      <button id="submitBtn">Ответить</button>
+      <button id="nextBtn">Следующий вопрос</button>
+      <!-- exitErrorsBtn добавляется динамически внутри app.js -->
+    </div>
+
+    <footer class="footer">
+      <button id="errorsBtn">Работа над ошибками</button>
+      <div id="stats" aria-live="polite"></div>
+    </footer>
+  </main>
+
+  <!-- ====== AUTH OVERLAY (видна, если не вошёл) ====== -->
+  <div id="authOverlay">
+    <div class="authCard" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <h1 id="authTitle">Доступ к тесту</h1>
+      <input id="email" type="email" placeholder="Email" autocomplete="username" />
+      <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" />
+      <button id="authBtn">Войти / Зарегистрироваться</button>
+      <p id="authStatus" class="muted">Введите e-mail и пароль — если учётной записи нет, напишите на WhatssApp.</p>
+      <button id="helpBtn" class="small-ghost">Я администратор — где поменять доступ?</button>
+    </div>
+  </div>
+
+  <!-- ====== WAITING OVERLAY (видна, пока allowed = false) ====== -->
+  <div id="waitOverlay" style="display:none" aria-hidden="true">
+    <div class="authCard" role="dialog" aria-modal="true">
+      <h1>⏳ Ожидание подтверждения</h1>
+      <p class="muted">Ваша заявка принята. Администратор проверит и откроет доступ.</p>
+      <p class="muted" style="font-size:13px">Админ: Firebase Console → Firestore → коллекция <strong>users</strong> → поменять <strong>allowed</strong> на <strong>true</strong>.</p>
+      <button id="signOutFromWait" class="small-ghost">Выйти из аккаунта</button>
+    </div>
+  </div>
+
+  <!-- ====== Скрипт панели и основной модуль ====== -->
+  <script type="module" src="app.js"></script>
+  <script>
+    // Кнопка сворачивания панели вопросов
+    const wrapper = document.getElementById("questionPanelWrapper");
+    const toggleBtn = document.getElementById("togglePanelBtn");
+    
+    toggleBtn.onclick = () => {
+      wrapper.classList.toggle("collapsed");
+      if (wrapper.classList.contains('collapsed')) {
+        toggleBtn.textContent = '⇦';
+        toggleBtn.title = 'Развернуть панель';
+      } else {
+        toggleBtn.textContent = '⇨';
+        toggleBtn.title = 'Свернуть панель';
+      }
+    };
+    
+    // Открываем панель по умолчанию
+    wrapper.classList.remove("collapsed");
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
