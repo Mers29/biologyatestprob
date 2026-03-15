@@ -694,7 +694,7 @@ function renderContent() {
           <div class="q-txt">${escapeHtml(q.text)}</div>
           <div class="ans-list">
             ${q.answers.map((a,j) => `
-              <label class="${q.userAnswers.includes(j)?'sel':''} ${q.checked?(q.correct.includes(j)?'cor':q.userAnswers.includes(j)?'err':'') : ''}" 
+              <label class="${q.userAnswers.includes(j)?'sel':''} ${q.checked?(q.correct.includes(j)?'cor':q.userAnswers.includes(j)?'err':''):''}" 
                      onclick="${q.checked?'':'toggleAnswer(${i},${j})'}">
                 <input type="${q.isMultiple?'checkbox':'radio'}" ${q.userAnswers.includes(j)?'checked':''} ${q.checked?'disabled':''}>
                 <span class="mark">${q.checked?(q.correct.includes(j)?'✓':q.userAnswers.includes(j)?'✗':''):''}</span>
