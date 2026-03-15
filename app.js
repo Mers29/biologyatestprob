@@ -963,12 +963,6 @@ window.resetVariant = function() {
   showNotification('Вариант нөлденді!', 'info');
 };
 
-function isCorrect(q) {
-  const c = [...q.correct].sort((a,b)=>a-b);
-  const u = [...q.userAnswers].sort((a,b)=>a-b);
-  return c.length===u.length && c.every((v,i)=>v===u[i]);
-}
-
 function escapeHtml(t) {
   if (!t) return '';
   return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -1028,12 +1022,16 @@ css.textContent = `
   .q-card.right{background:linear-gradient(135deg,#e8f5e9 0%,#c8e6c9 100%)}
   .q-card.wrong{background:linear-gradient(135deg,#ffebee 0%,#ffcdd2 100%)}
   
+  /* ===== СТИЛИ ДЛЯ ЧАСТИЧНО ПРАВИЛЬНЫХ ОТВЕТОВ ===== */
+  .q-card.partial{background:linear-gradient(135deg,#fff3e0 0%,#ffe0b2 100%);border-left:4px solid #ff9800}
+  
   .q-top{display:flex;align-items:center;gap:12px;margin-bottom:15px}
   .num{background:#667eea;color:white;padding:6px 14px;border-radius:20px;font-weight:bold;font-size:14px}
   .type{color:#666;font-size:13px;background:#f0f0f0;padding:4px 12px;border-radius:15px}
   .res{margin-left:auto;font-weight:bold;font-size:18px;padding:4px 12px;border-radius:15px}
   .q-card.right .res{background:#4caf50;color:white}
   .q-card.wrong .res{background:#f44336;color:white}
+  .q-card.partial .res{background:#ff9800;color:white}
   
   .q-txt{font-size:17px;line-height:1.7;margin-bottom:20px;font-weight:500}
   
@@ -1055,6 +1053,8 @@ css.textContent = `
   .finish-box button{padding:20px 50px;font-size:18px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border:none;border-radius:12px;cursor:pointer;transition:all 0.3s;box-shadow:0 8px 30px rgba(102,126,234,0.4)}
   .finish-box button:hover{transform:translateY(-4px);box-shadow:0 12px 40px rgba(102,126,234,0.5)}
   
+  .progress-box{text-align:center;padding:20px;background:white;border-radius:12px;margin-top:20px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}
+  
   .res-card{text-align:center;padding:40px;background:white;border-radius:16px;margin-bottom:25px;box-shadow:0 8px 30px rgba(0,0,0,0.1)}
   .score-circle{position:relative;width:150px;height:150px;margin:0 auto 20px}
   .score-circle svg{transform:rotate(-90deg);width:100%;height:100%}
@@ -1072,6 +1072,11 @@ css.textContent = `
   @keyframes slideIn{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:translateX(0)}}
   .res-item.ok{border-left-color:#4caf50;background:#e8f5e9}
   .res-item.bad{border-left-color:#f44336;background:#ffebee}
+  
+  /* ===== СТИЛИ ДЛЯ ЧАСТИЧНО ПРАВИЛЬНЫХ В РЕЗУЛЬТАТАХ ===== */
+  .res-item.partial{border-left-color:#ff9800;background:#fff3e0}
+  .res-item.partial .h span{background:#ff9800;color:white}
+  
   .res-item .h{display:flex;align-items:center;gap:10px;margin-bottom:12px;font-weight:bold}
   .res-item .h span{background:#f0f0f0;padding:5px 12px;border-radius:15px;font-size:14px}
   .res-item.ok .h span{background:#4caf50;color:white}
@@ -1080,7 +1085,7 @@ css.textContent = `
   .res-item .a{font-size:14px;color:#666;margin-bottom:4px}
   .res-item .c{font-size:14px;color:#4caf50;font-weight:500}
   
-    .notif { position: fixed; top: 20px; right: 20px; padding: 15px 25px; border-radius: 10px; color: white; transform: translateX(400px); transition: transform 0.3s; z-index: 1001; }
+  .notif { position: fixed; top: 20px; right: 20px; padding: 15px 25px; border-radius: 10px; color: white; transform: translateX(400px); transition: transform 0.3s; z-index: 1001; }
   .notif.show { transform: translateX(0); }
   .notif.success { background: #4caf50; }
   .notif.error { background: #f44336; }
