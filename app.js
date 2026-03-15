@@ -453,30 +453,37 @@ onAuthStateChanged(auth, async (user) => {
   setupAdminPanel();
   createWhatsAppButton();
   
-  await loadQuestionsFromFirestore();
+  await loadQuestionsFromGithub();
   generateVariantList();
   loadLocal();
   renderSidebar();
   selectVariant(currentVariant || VARIANTS_LIST[0]);
 });
 
-// ===== LOAD QUESTIONS =====
-async function loadQuestionsFromFirestore() {
+// ===== LOAD QUESTIONS FROM GITHUB =====
+async function loadQuestionsFromGithub() {
   try {
-    const snap = await getDocs(collection(db, QUESTIONS_COLLECTION));
+    // Замените на ваш реальный URL к raw JSON файлу в GitHub
+    const GITHUB_RAW_URL = 'https://raw.githubusercontent.com/Mers29/biologyatestprob/main/questions.json';
+    
+    const response = await fetch(GITHUB_RAW_URL);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const questionsData = await response.json();
     
     allQuestions = [];
     singleQuestions = [];
     multipleQuestions = [];
     
-    snap.forEach(doc => {
-      const q = doc.data();
+    questionsData.forEach((q, index) => {
       let correct = q.correct || [0];
       if (!Array.isArray(correct)) correct = [correct];
       correct = correct.map(c => parseInt(c)).filter(c => !isNaN(c));
       
       const question = {
-        id: doc.id,
+        id: q.id || `q${index}`,
         text: q.text || 'Вопрос',
         answers: q.answers || [],
         correct: correct,
@@ -488,10 +495,15 @@ async function loadQuestionsFromFirestore() {
       else singleQuestions.push(question);
     });
     
-    console.log(`Загружено: ${allQuestions.length} вопросов`);
+    console.log(`Загружено из GitHub: ${allQuestions.length} вопросов`);
   } catch (e) {
-    console.error('Ошибка загрузки вопросов:', e);
-    alert('Ошибка загрузки вопросов!');
+    console.error('Ошибка загрузки вопросов из GitHub:', e);
+    alert('Ошибка загрузки вопросов! Проверьте подключение к интернету.');
+    
+    // Fallback: пустые массивы или можно загрузить из localStorage как backup
+    allQuestions = [];
+    singleQuestions = [];
+    multipleQuestions = [];
   }
 }
 
