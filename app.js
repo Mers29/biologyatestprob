@@ -1,3 +1,23 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
+import {
+  getFirestore, doc, setDoc, getDoc, getDocs, collection, serverTimestamp, updateDoc,
+  arrayUnion, writeBatch
+} from "https://www.gstatic.com/firebasejs/12.8.0/firebase-firestore.js";
+import {
+  getAuth, onAuthStateChanged, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+  updatePassword, EmailAuthProvider, reauthenticateWithCredential
+} from "https://www.gstatic.com/firebasejs/12.8.0/firebase-auth.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDGpnrS3DQRq4iopuVCL86N6ss7zsVL8Kk",
+  authDomain: "biotestprob.firebaseapp.com",
+  projectId: "biotestprob",
+  storageBucket: "biotestprob.firebasestorage.app",
+  messagingSenderId: "177127143512",
+  appId: "1:177127143512:web:7fed6b4bb5db311d3b322d",
+  measurementId: "G-99FCZ1PQKQ"
+};
+
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
