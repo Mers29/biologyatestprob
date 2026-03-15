@@ -1,477 +1,365 @@
-// app.js - Biology Quiz with Variants System (адаптирован под существующий JSON)
-// Строгие требования: 25 single (4 ответа, 1 правильный) + 15 multiple (4+ ответов, 2+ правильных)
-// Рандомизация, 1 изображение на вариант, ручное сохранение
-
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
 import {
-  getFirestore,
-  doc,
-  setDoc,
-  getDoc,
-  serverTimestamp
+  getFirestore, doc, setDoc, getDoc, getDocs, collection, serverTimestamp, updateDoc, deleteDoc
 } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-firestore.js";
 import {
-  getAuth,
-  onAuthStateChanged,
-  signOut,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword
+  getAuth, onAuthStateChanged, signOut,
+  signInWithEmailAndPassword, createUserWithEmailAndPassword
 } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-auth.js";
 
-// ===== FIREBASE CONFIG =====
 const firebaseConfig = {
   apiKey: "AIzaSyBtYSlpZ0JHmUDNYCbp5kynR_yifj5y0dY",
   authDomain: "baseforbiotest.firebaseapp.com",
   projectId: "baseforbiotest",
   storageBucket: "baseforbiotest.firebasestorage.app",
   messagingSenderId: "678186767483",
-  appId: "1:678186767483:web:ca06fa25c69fab8aa5fede",
-  measurementId: "G-Y2WZ1W3SBN"
+  appId: "1:678186767483:web:ca06fa25c69fab8aa5fede"
 };
 
-// ===== INIT =====
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
 
-// ===== CONSTANTS =====
 const SINGLE_COUNT = 25;
 const MULTIPLE_COUNT = 15;
-const VARIANTS_LIST = ["1-нұсқа", "2-нұсқа", "3-нұсқа", "4-нұсқа", "5-нұсқа", "6-нұсқа", "7-нұсқа", "8-нұсқа"];
+const ADMIN_EMAIL = "faceits1mple2000@gmail.com";
 
-// ===== GLOBAL STATE =====
 let currentUser = null;
-let allQuestions = []; // Все вопросы из JSON
-let singleQuestions = []; // Только single choice (фильтрованные)
-let multipleQuestions = []; // Только multiple choice (фильтрованные)
-let imageQuestions = []; // Вопросы с изображениями
-let currentVariant = null;
-let variantsState = {}; // Состояние всех вариантов
 let isAdmin = false;
-
-// ===== DOM ELEMENTS =====
-const authOverlay = document.getElementById('authOverlay');
-const appDiv = document.getElementById('app');
-const sidebar = document.getElementById('sidebar');
-const variantContent = document.getElementById('variantContent');
-const emailInput = document.getElementById('email');
-const passInput = document.getElementById('password');
-const authBtn = document.getElementById('authBtn');
-const authStatus = document.getElementById('authStatus');
-const userEmailSpan = document.getElementById('userEmail');
+let allQuestions = [];
+let singleQuestions = [];
+let multipleQuestions = [];
+let VARIANTS_LIST = [];
+let currentVariant = null;
+let variantsState = {};
 
 // ===== AUTH =====
-authBtn?.addEventListener('click', async () => {
-  const email = emailInput?.value?.trim();
-  const password = passInput?.value;
-  
-  if (!email || !password) {
-    authStatus.textContent = 'Email және құпия сөзді енгізіңіз';
+onAuthStateChanged(auth, async (user) => {
+  if (!user) {
+    showAuth();
     return;
   }
+  currentUser = user;
+  isAdmin = user.email === ADMIN_EMAIL;
   
+  hideAuth();
+  setupAdminPanel();
+  
+  await loadQuestionsFromFirestore();
+  generateVariantList(); // Авто-генерация списка вариантов
+  loadLocal();
+  renderSidebar();
+  selectVariant(currentVariant || VARIANTS_LIST[0]);
+});
+
+document.getElementById('authBtn')?.addEventListener('click', async () => {
+  const email = document.getElementById('email').value.trim();
+  const pass = document.getElementById('password').value;
   try {
-    authBtn.disabled = true;
-    authBtn.textContent = 'Кіру...';
-    
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (e) {
-      if (e.code === 'auth/user-not-found') {
-        authStatus.textContent = 'Аккаунт табылмады, тіркелу...';
-        await createUserWithEmailAndPassword(auth, email, password);
-      } else {
-        throw e;
-      }
+    await signInWithEmailAndPassword(auth, email, pass);
+  } catch (e) {
+    if (e.code === 'auth/user-not-found') {
+      await createUserWithEmailAndPassword(auth, email, pass);
+      await setDoc(doc(db, "users", auth.currentUser.uid), {
+        email: email,
+        allowed: false,
+        createdAt: serverTimestamp()
+      });
     }
-  } catch (error) {
-    authStatus.textContent = 'Қате: ' + error.message;
-    authBtn.disabled = false;
-    authBtn.textContent = 'Кіру / Тіркелу';
   }
 });
 
 document.getElementById('logoutBtn')?.addEventListener('click', () => signOut(auth));
 
-onAuthStateChanged(auth, async (user) => {
-  if (!user) {
-    authOverlay.style.display = 'flex';
-    appDiv.style.display = 'none';
+// ===== ADMIN PANEL =====
+function setupAdminPanel() {
+  if (!isAdmin) {
+    document.getElementById('adminPanel')?.remove();
     return;
   }
   
-  currentUser = user;
-  userEmailSpan.textContent = user.email;
-  isAdmin = user.email === "faceits1mple2000@gmail.com";
-  
-  authOverlay.style.display = 'none';
-  appDiv.style.display = 'block';
-  
-  // Загружаем и обрабатываем вопросы
-  await loadAndProcessQuestions();
-  
-  // Загружаем локальный прогресс
-  loadLocalProgress();
-  
-  // Рендерим сайдбар
-  renderSidebar();
-  
-  // Выбираем первый вариант или текущий
-  if (!currentVariant || !variantsState[currentVariant]) {
-    selectVariant(VARIANTS_LIST[0]);
-  } else {
-    selectVariant(currentVariant);
-  }
-});
-
-// ===== LOAD & PROCESS QUESTIONS =====
-async function loadAndProcessQuestions() {
-  try {
-    const response = await fetch('questions.json?t=' + Date.now());
-    if (!response.ok) throw new Error('Failed to load');
-    
-    allQuestions = await response.json();
-    
-    // Фильтруем и валидируем вопросы
-    singleQuestions = [];
-    multipleQuestions = [];
-    imageQuestions = [];
-    
-    allQuestions.forEach((q, idx) => {
-      // Нормализуем correct в массив
-      let correct = q.correct;
-      if (!Array.isArray(correct)) correct = [correct];
-      
-      const question = {
-        ...q,
-        id: q.id || `q_${idx}`,
-        correct: correct,
-        isMultiple: correct.length > 1
-      };
-      
-      // Проверяем требования
-      if (!question.isMultiple && question.answers.length === 4 && correct.length === 1) {
-        // Single: ровно 4 ответа, 1 правильный
-        singleQuestions.push(question);
-      } else if (question.isMultiple && question.answers.length >= 4 && correct.length >= 2) {
-        // Multiple: 4+ ответов, 2+ правильных
-        multipleQuestions.push(question);
-      }
-      
-      // Собираем вопросы с изображениями
-      if (q.image) {
-        imageQuestions.push(question);
-      }
-    });
-    
-    console.log(`Загружено: ${singleQuestions.length} single, ${multipleQuestions.length} multiple, ${imageQuestions.length} с изображениями`);
-    
-    // Проверяем достаточность
-    if (singleQuestions.length < SINGLE_COUNT * VARIANTS_LIST.length) {
-      console.warn(`Мало single вопросов! Нужно: ${SINGLE_COUNT * VARIANTS_LIST.length}, есть: ${singleQuestions.length}`);
-    }
-    if (multipleQuestions.length < MULTIPLE_COUNT * VARIANTS_LIST.length) {
-      console.warn(`Мало multiple вопросов! Нужно: ${MULTIPLE_COUNT * VARIANTS_LIST.length}, есть: ${multipleQuestions.length}`);
-    }
-    if (imageQuestions.length < VARIANTS_LIST.length) {
-      console.warn(`Мало вопросов с изображениями! Нужно: ${VARIANTS_LIST.length}, есть: ${imageQuestions.length}`);
-    }
-    
-  } catch (error) {
-    console.error('Error loading questions:', error);
-    alert('Сұрақтарды жүктеу қатесі!');
+  let panel = document.getElementById('adminPanel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'adminPanel';
+    panel.innerHTML = `
+      <div class="admin-toggle" onclick="toggleAdmin()">👑 Админ</div>
+      <div class="admin-content" id="adminContent" style="display:none;">
+        <h3>Админ панель</h3>
+        <button onclick="loadAllUsers()">Пайдаланушылар</button>
+        <button onclick="grantAllAccess()">Барлығына рұқсат</button>
+        <button onclick="revokeAllAccess()">Барлық рұқсатты алу</button>
+        <div id="adminUsers"></div>
+      </div>
+    `;
+    document.body.appendChild(panel);
   }
 }
 
-// ===== VARIANT GENERATION =====
-function generateVariant(variantId) {
-  // Проверяем использованные вопросы в других вариантах
-  const usedIds = new Set();
-  Object.values(variantsState).forEach(v => {
-    if (v.questions) {
-      v.questions.forEach(q => usedIds.add(q.originalId));
-    }
-  });
-  
-  // Фильтруем неиспользованные
-  let availableSingle = singleQuestions.filter(q => !usedIds.has(q.id));
-  let availableMultiple = multipleQuestions.filter(q => !usedIds.has(q.id));
-  let availableImages = imageQuestions.filter(q => !usedIds.has(q.id));
-  
-  // Если не хватает уникальных - берем из общего пула (с повторениями, но редкими)
-  if (availableSingle.length < SINGLE_COUNT) availableSingle = [...singleQuestions];
-  if (availableMultiple.length < MULTIPLE_COUNT) availableMultiple = [...multipleQuestions];
-  if (availableImages.length < 1) availableImages = [...imageQuestions];
-  
-  // Перемешиваем
-  availableSingle = shuffleArray([...availableSingle]);
-  availableMultiple = shuffleArray([...availableMultiple]);
-  availableImages = shuffleArray([...availableImages]);
-  
-  // Выбираем вопросы
-  const selectedSingle = availableSingle.slice(0, SINGLE_COUNT);
-  const selectedMultiple = availableMultiple.slice(0, MULTIPLE_COUNT);
-  
-  // Выбираем 1 вопрос с изображением (может быть из single или multiple)
-  const imageQuestion = availableImages[0];
-  
-  // Помечаем, какой вопрос получит изображение
-  let imageAdded = false;
-  
-  // Обрабатываем вопросы: перемешиваем ответы, сохраняем маппинг правильных
-  const processQuestion = (q, index, forceImage = false) => {
-    const answers = [...q.answers];
-    const correct = [...q.correct];
-    
-    // Перемешиваем ответы
-    const order = shuffleArray(answers.map((_, i) => i));
-    const shuffledAnswers = order.map(i => answers[i]);
-    const shuffledCorrect = correct.map(c => order.indexOf(c));
-    
-    // Определяем, нужно ли добавить изображение
-    let hasImage = false;
-    if ((forceImage || q.id === imageQuestion?.id) && !imageAdded) {
-      hasImage = true;
-      imageAdded = true;
-    }
-    
-    return {
-      id: `${variantId}_${q.id}`,
-      originalId: q.id,
-      text: q.text,
-      answers: shuffledAnswers,
-      correct: shuffledCorrect,
-      image: hasImage ? q.image : null,
-      isMultiple: q.isMultiple,
-      userAnswers: [],
-      checked: false,
-      order: order // сохраняем для отладки
-    };
-  };
-  
-  // Обрабатываем single (первые 25)
-  const finalSingle = selectedSingle.map((q, i) => processQuestion(q, i));
-  
-  // Обрабатываем multiple (следующие 15), добавляем изображение если еще не добавлено
-  let finalMultiple = selectedMultiple.map((q, i) => processQuestion(q, i + SINGLE_COUNT));
-  
-  // Если изображение еще не добавлено, добавляем в случайный multiple вопрос
-  if (!imageAdded && finalMultiple.length > 0) {
-    const randomIdx = Math.floor(Math.random() * finalMultiple.length);
-    finalMultiple[randomIdx].image = imageQuestion?.image || null;
-  }
-  
-  // Формируем финальную очередь: сначала single, потом multiple
-  const allQuestions = [...finalSingle, ...finalMultiple];
-  
-  return {
-    id: variantId,
-    questions: allQuestions,
-    currentIndex: 0,
-    completed: false,
-    score: 0,
-    maxScore: SINGLE_COUNT * 1 + MULTIPLE_COUNT * 2, // single=1, multiple=2
-    lastSaved: null
-  };
-}
-
-function getStorageKey() {
-  return currentUser ? `bio_variants_v3_${currentUser.uid}` : 'bio_variants_v3_guest';
-}
-
-function saveLocalProgress() {
-  try {
-    // Очищаем данные перед сохранением
-    const cleanData = {
-      variants: {},
-      currentVariant: currentVariant,
-      timestamp: Date.now()
-    };
-    
-    Object.keys(variantsState).forEach(key => {
-      const v = variantsState[key];
-      if (!v) return;
-      
-      cleanData.variants[key] = {
-        id: v.id,
-        completed: v.completed || false,
-        score: v.score || 0,
-        maxScore: v.maxScore || 55,
-        currentIndex: v.currentIndex || 0,
-        questions: v.questions ? v.questions.map(q => ({
-          id: q.id,
-          originalId: q.originalId,
-          text: q.text,
-          answers: q.answers,
-          correct: q.correct,
-          image: q.image || null,
-          isMultiple: q.isMultiple,
-          userAnswers: q.userAnswers || [],
-          checked: q.checked || false,
-          score: q.score || 0
-        })) : []
-      };
-    });
-    
-    localStorage.setItem(getStorageKey(), JSON.stringify(cleanData));
-    
-    // Показываем тихое уведомление только при явном сохранении
-    // showNotification('Жергілікті сақтау сәтті', 'success');
-  } catch (e) {
-    console.error('Local save error:', e);
-  }
-}
-
-function loadLocalProgress() {
-  try {
-    const saved = localStorage.getItem(getStorageKey());
-    if (!saved) return;
-    
-    const data = JSON.parse(saved);
-    
-    if (data.variants && typeof data.variants === 'object') {
-      variantsState = {};
-      
-      Object.keys(data.variants).forEach(key => {
-        const v = data.variants[key];
-        variantsState[key] = {
-          ...v,
-          questions: v.questions ? v.questions.map(q => ({
-            ...q,
-            correct: Array.isArray(q.correct) ? q.correct : [q.correct],
-            userAnswers: q.userAnswers || []
-          })) : []
-        };
-      });
-      
-      currentVariant = data.currentVariant || null;
-    }
-  } catch (e) {
-    console.error('Local load error:', e);
-    variantsState = {};
-  }
-}
-
-// Сохранение в облако - ТОЛЬКО по кнопке, ВСЁ В ОДНУ СТРОКУ
-window.saveToCloud = async function() {
-  if (!currentUser) {
-    alert('Бұлтқа сақтау үшін кіріңіз');
-    return;
-  }
-  
-  const btn = document.getElementById('saveCloudBtn');
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '...';
-  }
-  
-  try {
-    // Сжимаем всё в одну строку JSON
-    const dataToSave = {
-      v: currentVariant,  // текущий вариант (короткое имя)
-      d: Date.now(),      // timestamp
-      // variantsState сжимаем в компактный JSON
-      data: JSON.stringify(variantsState)
-    };
-    
-    await setDoc(doc(db, "p", currentUser.uid), dataToSave);
-    
-    showNotification('✅ Сақталды!', 'success');
-    
-  } catch (error) {
-    console.error('Save error:', error);
-    showNotification('❌ Қате!', 'error');
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = '💾';
-    }
-  }
+window.toggleAdmin = () => {
+  const content = document.getElementById('adminContent');
+  content.style.display = content.style.display === 'none' ? 'block' : 'none';
 };
 
-// Загрузка из облака
-window.loadFromCloud = async function() {
-  if (!currentUser) {
-    alert('Кіріңіз');
-    return;
+window.loadAllUsers = async () => {
+  const snap = await getDocs(collection(db, "users"));
+  let html = '<h4>Пайдаланушылар:</h4>';
+  snap.forEach(d => {
+    const u = d.data();
+    html += `
+      <div class="user-row">
+        ${u.email} 
+        <span class="${u.allowed ? 'allowed' : 'denied'}">${u.allowed ? '✓' : '✗'}</span>
+        <button onclick="toggleUser('${d.id}', ${!u.allowed})">${u.allowed ? 'Алу' : 'Беру'}</button>
+      </div>
+    `;
+  });
+  document.getElementById('adminUsers').innerHTML = html;
+};
+
+window.toggleUser = async (uid, allow) => {
+  await updateDoc(doc(db, "users", uid), { allowed: allow });
+  loadAllUsers();
+};
+
+window.grantAllAccess = async () => {
+  const snap = await getDocs(collection(db, "users"));
+  snap.forEach(async (d) => {
+    if (d.data().email !== ADMIN_EMAIL) {
+      await updateDoc(doc(db, "users", d.id), { allowed: true });
+    }
+  });
+  loadAllUsers();
+};
+
+window.revokeAllAccess = async () => {
+  const snap = await getDocs(collection(db, "users"));
+  snap.forEach(async (d) => {
+    if (d.data().email !== ADMIN_EMAIL) {
+      await updateDoc(doc(db, "users", d.id), { allowed: false });
+    }
+  });
+  loadAllUsers();
+};
+
+// ===== LOAD QUESTIONS =====
+async function loadQuestionsFromFirestore() {
+  const snap = await getDocs(collection(db, "questions"));
+  allQuestions = [];
+  singleQuestions = [];
+  multipleQuestions = [];
+  
+  snap.forEach(doc => {
+    const q = doc.data();
+    const correct = (q.correct || [0]).map(c => parseInt(c)).filter(c => !isNaN(c));
+    
+    const question = {
+      id: doc.id,
+      text: q.text,
+      answers: q.answers || [],
+      correct: correct,
+      isMultiple: q.type === "multiple" || correct.length > 1
+    };
+    
+    allQuestions.push(question);
+    if (question.isMultiple) multipleQuestions.push(question);
+    else singleQuestions.push(question);
+  });
+  
+  console.log(`Жүктелді: ${singleQuestions.length} single, ${multipleQuestions.length} multiple`);
+}
+
+// ===== AUTO GENERATE VARIANTS =====
+function generateVariantList() {
+  // Сколько вариантов можно создать из имеющихся вопросов
+  const maxBySingle = Math.floor(singleQuestions.length / SINGLE_COUNT);
+  const maxByMultiple = Math.floor(multipleQuestions.length / MULTIPLE_COUNT);
+  const maxVariants = Math.min(maxBySingle, maxByMultiple, 20); // макс 20 вариантов
+  
+  VARIANTS_LIST = [];
+  for (let i = 1; i <= maxVariants; i++) {
+    VARIANTS_LIST.push(`${i}-нұсқа`);
   }
   
-  if (!confirm('Жүктеу?')) return;
-  
-  const btn = document.getElementById('loadCloudBtn');
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '...';
+  // Если вопросов мало — дублируем (но предупреждаем)
+  if (VARIANTS_LIST.length === 0) {
+    console.warn('Вопросов недостаточно! Нужно минимум 25 single и 15 multiple');
+    VARIANTS_LIST = ["1-нұсқа"]; // минимум 1
   }
+  
+  console.log(`Создано вариантов: ${VARIANTS_LIST.length}`);
+}
+
+// ===== GENERATE VARIANT =====
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function generateVariant(vid) {
+  // Использованные вопросы в других вариантах текущего пользователя
+  const used = new Set();
+  Object.values(variantsState).forEach(v => v.questions?.forEach(q => used.add(q.originalId)));
+  
+  let availSingle = singleQuestions.filter(q => !used.has(q.id));
+  let availMulti = multipleQuestions.filter(q => !used.has(q.id));
+  
+  // Если уникальных не хватает — берем из общего пула (с повторами)
+  if (availSingle.length < SINGLE_COUNT) availSingle = [...singleQuestions];
+  if (availMulti.length < MULTIPLE_COUNT) availMulti = [...multipleQuestions];
+  
+  const selSingle = shuffle(availSingle).slice(0, SINGLE_COUNT);
+  const selMulti = shuffle(availMulti).slice(0, MULTIPLE_COUNT);
+  
+  const process = (q, idx) => {
+    const order = shuffle(q.answers.map((_, i) => i));
+    return {
+      id: `${vid}_${q.id}`,
+      originalId: q.id,
+      text: q.text,
+      answers: order.map(i => q.answers[i]),
+      correct: q.correct.map(c => order.indexOf(c)),
+      isMultiple: q.isMultiple,
+      userAnswers: [],
+      checked: false
+    };
+  };
+  
+  return {
+    id: vid,
+    questions: [...selSingle.map((q, i) => process(q, i)), ...selMulti.map((q, i) => process(q, i + SINGLE_COUNT))],
+    completed: false,
+    score: 0,
+    maxScore: SINGLE_COUNT + MULTIPLE_COUNT * 2
+  };
+}
+
+// ===== STATE =====
+function getKey() { return `bio_v5_${currentUser?.uid || 'guest'}`; }
+
+function saveLocal() {
+  try {
+    localStorage.setItem(getKey(), JSON.stringify({v: variantsState, c: currentVariant, t: Date.now()}));
+  } catch(e) { console.error('Local save error:', e); }
+}
+
+function loadLocal() {
+  try {
+    const d = JSON.parse(localStorage.getItem(getKey()));
+    if (d) { variantsState = d.v || {}; currentVariant = d.c; }
+  } catch(e) { variantsState = {}; }
+}
+
+// ===== CLOUD =====
+window.saveCloud = async () => {
+  if (!currentUser) return alert('Кіріңіз');
+  
+  const btn = document.getElementById('saveCloudBtn');
+  const originalText = btn?.innerHTML;
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳'; }
   
   try {
-    const docSnap = await getDoc(doc(db, "p", currentUser.uid));
-    
-    if (!docSnap.exists()) {
-      showNotification('Бұлтта жоқ', 'info');
+    // Проверяем доступ
+    const userDoc = await getDoc(doc(db, "users", currentUser.uid));
+    if (!userDoc.exists() || !userDoc.data().allowed) {
+      showNotification('❌ Рұқсат жоқ! Админмен хабарласыңыз.', 'error');
       return;
     }
     
-    const doc = docSnap.data();
+    const payload = {
+      d: JSON.stringify(variantsState),
+      c: currentVariant,
+      t: serverTimestamp(),
+      u: currentUser.uid,
+      e: currentUser.email
+    };
     
-    // Распаковываем из строки
-    if (doc.data) {
-      variantsState = JSON.parse(doc.data);
-      currentVariant = doc.v || VARIANTS_LIST[0];
-      
-      saveLocalProgress(); // синхронизируем локально
-      renderSidebar();
-      selectVariant(currentVariant);
-      
-      showNotification('✅ Жүктелді!', 'success');
-    }
+    await setDoc(doc(db, "variants_progress", currentUser.uid), payload);
+    showNotification('✅ Бұлтқа сақталды!', 'success');
     
-  } catch (error) {
-    console.error('Load error:', error);
-    showNotification('❌ Қате!', 'error');
+  } catch (e) {
+    console.error('Save error:', e);
+    showNotification('❌ Сақтау қатесі!', 'error');
   } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = '☁️';
-    }
+    if (btn) { btn.disabled = false; btn.innerHTML = originalText || '💾'; }
   }
 };
 
-// ===== UI RENDERING =====
-function renderSidebar() {
-  if (!sidebar) return;
+window.loadCloud = async () => {
+  if (!currentUser) return alert('Кіріңіз');
+  if (!confirm('Бұлттан жүктеу? Барлық жергілікті деректер ауыстырылады!')) return;
   
-  sidebar.innerHTML = `
+  const btn = document.getElementById('loadCloudBtn');
+  const originalText = btn?.innerHTML;
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳'; }
+  
+  try {
+    const snap = await getDoc(doc(db, "variants_progress", currentUser.uid));
+    if (!snap.exists()) {
+      showNotification('ℹ️ Бұлтта деректер жоқ', 'info');
+      return;
+    }
+    
+    const d = snap.data();
+    if (!d.d) {
+      showNotification('❌ Деректер бүлінген', 'error');
+      return;
+    }
+    
+    variantsState = JSON.parse(d.d);
+    currentVariant = d.c || VARIANTS_LIST[0];
+    saveLocal();
+    renderSidebar();
+    selectVariant(currentVariant);
+    showNotification('✅ Бұлттан жүктелді!', 'success');
+    
+  } catch (e) {
+    console.error('Load error:', e);
+    showNotification('❌ Жүктеу қатесі!', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = originalText || '☁️'; }
+  }
+};
+
+// ===== UI =====
+function renderSidebar() {
+  const sb = document.getElementById('sidebar');
+  if (!sb) return;
+  
+  const st = variantsState[currentVariant];
+  const answered = st ? st.questions.filter(q => q.checked).length : 0;
+  const total = st ? st.questions.length : 0;
+  
+  sb.innerHTML = `
     <div class="sidebar-header">
-      <h3>Варианттар</h3>
-      <div class="sidebar-actions">
-        <button onclick="saveToCloud()" id="saveCloudBtn" class="btn-small btn-save">💾</button>
-        <button onclick="loadFromCloud()" id="loadCloudBtn" class="btn-small btn-load">☁️</button>
+      <h3>Варианттар (${VARIANTS_LIST.length})</h3>
+      <div class="cloud-btns">
+        <button id="saveCloudBtn" onclick="saveCloud()" title="Бұлтқа сақтау">💾</button>
+        <button id="loadCloudBtn" onclick="loadCloud()" title="Бұлттан жүктеу">☁️</button>
       </div>
     </div>
+    <div class="variant-progress">${currentVariant ? `${answered}/${total} жауап` : ''}</div>
     <div class="variants-list">
-      ${VARIANTS_LIST.map(vid => {
-        const state = variantsState[vid];
-        let statusClass = '';
-        let statusIcon = '';
-        
-        if (state?.completed) {
-          statusClass = 'completed';
-          statusIcon = '✓';
-        } else if (state?.questions) {
-          const answered = state.questions.filter(q => q.checked).length;
-          if (answered > 0) {
-            statusClass = 'in-progress';
-            statusIcon = `${answered}/${state.questions.length}`;
-          }
+      ${VARIANTS_LIST.map((v, idx) => {
+        const vs = variantsState[v];
+        let status = '';
+        let cls = '';
+        if (vs?.completed) {
+          status = '✓';
+          cls = 'completed';
+        } else if (vs?.questions?.some(q => q.checked)) {
+          const ans = vs.questions.filter(q => q.checked).length;
+          status = `${ans}/${vs.questions.length}`;
+          cls = 'progress';
         }
-        
-        const activeClass = vid === currentVariant ? 'active' : '';
-        
         return `
-          <button class="variant-btn ${activeClass} ${statusClass}" onclick="selectVariant('${vid}')">
-            <span class="variant-name">${vid}</span>
-            <span class="variant-status">${statusIcon}</span>
+          <button class="variant-btn ${v===currentVariant?'active':''} ${cls}" onclick="selectVariant('${v}')">
+            <span class="v-name">${v}</span>
+            <span class="v-status">${status}</span>
           </button>
         `;
       }).join('')}
@@ -479,799 +367,399 @@ function renderSidebar() {
   `;
 }
 
-window.selectVariant = function(variantId) {
-  currentVariant = variantId;
-  
-  // Генерируем если нет
-  if (!variantsState[variantId] || !variantsState[variantId].questions) {
-    variantsState[variantId] = generateVariant(variantId);
-    saveLocalProgress();
+window.selectVariant = (vid) => {
+  currentVariant = vid;
+  if (!variantsState[vid]) {
+    variantsState[vid] = generateVariant(vid);
+    saveLocal();
   }
-  
   renderSidebar();
-  renderVariantContent();
-  
-  // Скролл наверх
+  renderContent();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 };
 
-function renderVariantContent() {
-  if (!variantContent || !currentVariant) return;
+function renderContent() {
+  const el = document.getElementById('variantContent');
+  const st = variantsState[currentVariant];
+  if (!st) return;
   
-  const state = variantsState[currentVariant];
-  if (!state?.questions) return;
+  const answered = st.questions.filter(q => q.checked).length;
+  const allAnswered = answered === st.questions.length;
   
-  let html = `
-    <div class="variant-header">
-      <div class="variant-title">
-        <h2>${currentVariant}</h2>
-        <div class="variant-stats">
-          ${state.completed 
-            ? `Балл: <strong>${state.score}/${state.maxScore}</strong> (${Math.round(state.score/state.maxScore*100)}%)`
-            : `Жауап берілді: ${state.questions.filter(q => q.checked).length}/${state.questions.length}`
-          }
-        </div>
-      </div>
-      <div class="variant-actions">
-        <button onclick="resetVariant()" class="btn btn-reset">🔄 Қайта бастау</button>
-        ${state.completed ? `<button onclick="showResults()" class="btn btn-primary">📊 Нәтижелер</button>` : ''}
-      </div>
-    </div>
-  `;
-  
-  if (state.completed) {
-    html += renderResults(state);
-  } else {
-    html += renderQuestions(state);
-  }
-  
-  variantContent.innerHTML = html;
-}
-
-function renderQuestions(state) {
-  let html = '<div class="questions-container">';
-  
-  state.questions.forEach((q, index) => {
-    const qNum = index + 1;
-    const isAnswered = q.checked;
-    const isMultiple = q.isMultiple;
-    
-    html += `
-      <div class="question-card ${isAnswered ? 'answered' : ''}" id="q${index}">
-        <div class="question-header">
-          <span class="q-number">№${qNum}</span>
-          <span class="q-type">${isMultiple ? '☑️ Көп жауапты' : '◉ Бір жауапты'}</span>
-          ${isAnswered ? `<span class="q-status ${isQuestionCorrect(q) ? 'correct' : 'wrong'}">${isQuestionCorrect(q) ? '✓ Дұрыс' : '✗ Қате'}</span>` : ''}
-        </div>
-        
-        <div class="question-text">${escapeHtml(q.text)}</div>
-        
-        ${q.image ? `
-          <div class="question-image-wrapper">
-            <img src="${q.image}" alt="Сурет" class="question-image" onclick="window.open('${q.image}', '_blank')" loading="lazy">
-          </div>
-        ` : ''}
-        
-        <div class="answers-grid" data-qindex="${index}">
-          ${q.answers.map((ans, ansIdx) => `
-            <label class="answer-option ${q.userAnswers.includes(ansIdx) ? 'selected' : ''} 
-                   ${isAnswered ? (q.correct.includes(ansIdx) ? 'correct' : (q.userAnswers.includes(ansIdx) ? 'wrong' : '')) : ''}"
-                   onclick="${isAnswered ? '' : `toggleAnswer(${index}, ${ansIdx})`}">
-              <input type="${isMultiple ? 'checkbox' : 'radio'}" 
-                     name="q${index}" 
-                     ${q.userAnswers.includes(ansIdx) ? 'checked' : ''}
-                     ${isAnswered ? 'disabled' : ''}
-                     onclick="event.stopPropagation()">
-              <span class="answer-text">${escapeHtml(ans)}</span>
-              ${isAnswered ? `<span class="answer-icon">${q.correct.includes(ansIdx) ? '✓' : (q.userAnswers.includes(ansIdx) ? '✗' : '')}</span>` : ''}
-            </label>
-          `).join('')}
-        </div>
-        
-        ${!isAnswered ? `
-          <button onclick="checkAnswer(${index})" class="btn btn-check" id="check-btn-${index}">
-            ✓ Тексеру
-          </button>
-        ` : ''}
-      </div>
-    `;
-  });
-  
-  // Кнопка завершения (показываем если все отвечены)
-  const allAnswered = state.questions.every(q => q.checked);
-  if (allAnswered && !state.completed) {
-    html += `
-      <div class="finish-section">
-        <div class="finish-message">Барлық сұрақтарға жауап бердіңіз!</div>
-        <button onclick="finishVariant()" class="btn btn-finish">
-          🏁 Тестті аяқтау
-        </button>
-      </div>
-    `;
-  }
-  
-  html += '</div>';
-  return html;
-}
-
-function renderResults(state) {
-  const correctCount = state.questions.filter(q => isQuestionCorrect(q)).length;
-  const percentage = Math.round((state.score / state.maxScore) * 100);
-  
-  let html = `
-    <div class="results-container">
-      <div class="score-card">
-        <div class="score-circle">
-          <div class="score-value">${state.score}</div>
-          <div class="score-max">/${state.maxScore}</div>
-        </div>
-        <div class="score-percentage">${percentage}%</div>
-        <div class="score-breakdown">
-          <div>Дұрыс жауаптар: ${correctCount}/${state.questions.length}</div>
-          <div>Single: ${state.questions.slice(0, SINGLE_COUNT).filter(isQuestionCorrect).length}/${SINGLE_COUNT}</div>
-          <div>Multiple: ${state.questions.slice(SINGLE_COUNT).filter(isQuestionCorrect).length}/${MULTIPLE_COUNT}</div>
-        </div>
-      </div>
-      
-      <div class="results-details">
-        <h3>Толық нәтижелер:</h3>
-        <div class="results-list">
-  `;
-  
-  state.questions.forEach((q, idx) => {
-    const correct = isQuestionCorrect(q);
-    html += `
-      <div class="result-item ${correct ? 'correct' : 'wrong'}">
-        <div class="result-header">
-          <span class="result-num">№${idx + 1}</span>
-          <span class="result-badge">${correct ? '✓ Дұрыс' : '✗ Қате'}</span>
-        </div>
-        <div class="result-question">${escapeHtml(q.text)}</div>
-        <div class="result-answers">
-          <div class="user-answer">Сіз: ${q.userAnswers.length > 0 ? q.userAnswers.map(i => escapeHtml(q.answers[i])).join(', ') : 'Жоқ'}</div>
-          <div class="correct-answer">Дұрыс: ${q.correct.map(i => escapeHtml(q.answers[i])).join(', ')}</div>
-        </div>
-      </div>
-    `;
-  });
-  
-  html += '</div></div></div>';
-  return html;
-}
-
-// ===== ACTIONS =====
-window.toggleAnswer = function(qIndex, ansIndex) {
-  const state = variantsState[currentVariant];
-  const q = state.questions[qIndex];
-  
-  if (q.checked) return;
-  
-  if (q.isMultiple) {
-    // Multiple: toggle
-    if (q.userAnswers.includes(ansIndex)) {
-      q.userAnswers = q.userAnswers.filter(i => i !== ansIndex);
-    } else {
-      q.userAnswers.push(ansIndex);
-    }
-  } else {
-    // Single: replace
-    q.userAnswers = [ansIndex];
-  }
-  
-  // Обновляем только эту карточку для производительности
-  updateQuestionCard(qIndex);
-};
-
-function updateQuestionCard(qIndex) {
-  const state = variantsState[currentVariant];
-  const q = state.questions[qIndex];
-  const card = document.getElementById(`q${qIndex}`);
-  if (!card) return;
-  
-  // Обновляем отображение ответов
-  const options = card.querySelectorAll('.answer-option');
-  options.forEach((opt, idx) => {
-    opt.classList.toggle('selected', q.userAnswers.includes(idx));
-    const input = opt.querySelector('input');
-    if (input) input.checked = q.userAnswers.includes(idx);
-  });
-}
-
-window.checkAnswer = function(qIndex) {
-  const state = variantsState[currentVariant];
-  const q = state.questions[qIndex];
-  
-  if (q.userAnswers.length === 0) {
-    showNotification('Жауапты таңдаңыз!', 'warning');
+  if (st.completed) {
+    renderResults(el, st);
     return;
   }
   
-  q.checked = true;
+  el.innerHTML = `
+    <div class="variant-header">
+      <div class="v-info">
+        <h1>${currentVariant}</h1>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width:${(answered/st.questions.length)*100}%"></div>
+          <span>${answered}/${st.questions.length}</span>
+        </div>
+      </div>
+      <button class="btn-reset" onclick="resetVariant()">🔄 Қайта бастау</button>
+    </div>
+    
+    <div class="questions-list">
+      ${st.questions.map((q, i) => `
+        <div class="question-card ${q.checked ? (isCorrect(q) ? 'correct' : 'wrong') : ''}" id="q${i}">
+          <div class="q-header">
+            <span class="q-num">${i + 1}</span>
+            <span class="q-type">${q.isMultiple ? '☑️ Көп жауапты' : '◉ Бір жауапты'}</span>
+            ${q.checked ? `<span class="q-result">${isCorrect(q) ? '✓ Дұрыс' : '✗ Қате'}</span>` : ''}
+          </div>
+          
+          <div class="q-text">${escapeHtml(q.text)}</div>
+          
+          <div class="answers">
+            ${q.answers.map((a, j) => `
+              <label class="answer ${q.userAnswers.includes(j) ? 'selected' : ''} 
+                     ${q.checked ? (q.correct.includes(j) ? 'correct-ans' : (q.userAnswers.includes(j) ? 'wrong-ans' : '')) : ''}"
+                     onclick="${q.checked ? '' : `toggleAnswer(${i}, ${j})`}">
+                <input type="${q.isMultiple ? 'checkbox' : 'radio'}" 
+                       ${q.userAnswers.includes(j) ? 'checked' : ''} 
+                       ${q.checked ? 'disabled' : ''}>
+                <span class="checkmark">${q.checked ? (q.correct.includes(j) ? '✓' : (q.userAnswers.includes(j) ? '✗' : '')) : ''}</span>
+                <span class="a-text">${escapeHtml(a)}</span>
+              </label>
+            `).join('')}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    
+    ${allAnswered ? `
+      <div class="finish-section">
+        <div class="finish-msg">Барлық сұрақтарға жауап бердіңіз!</div>
+        <button class="btn-finish" onclick="finishVariant()">
+          <span>🏁 Тестті аяқтау</span>
+          <small>Нәтижелерді көру</small>
+        </button>
+      </div>
+    ` : ''}
+  `;
   
-  // Подсчет баллов
-  if (isQuestionCorrect(q)) {
-    q.score = q.isMultiple ? 2 : 1;
-    state.score += q.score;
+  // Плавная анимация появления
+  setTimeout(() => {
+    document.querySelectorAll('.question-card').forEach((c, i) => {
+      setTimeout(() => c.classList.add('show'), i * 50);
+    });
+  }, 10);
+}
+
+window.toggleAnswer = (qi, ai) => {
+  const q = variantsState[currentVariant].questions[qi];
+  if (q.checked) return;
+  
+  if (q.isMultiple) {
+    if (q.userAnswers.includes(ai)) {
+      q.userAnswers = q.userAnswers.filter(i => i !== ai);
+    } else {
+      q.userAnswers.push(ai);
+    }
   } else {
-    q.score = 0;
+    q.userAnswers = [ai];
   }
   
-  saveLocalProgress();
-  renderVariantContent();
+  // Обновляем только эту карточку без полного перерендера
+  updateAnswerVisuals(qi);
+};
+
+function updateAnswerVisuals(qi) {
+  const q = variantsState[currentVariant].questions[qi];
+  const card = document.getElementById(`q${qi}`);
+  if (!card) return;
   
-  // Авто-скролл к следующему
-  setTimeout(() => {
-    const nextUnanswered = state.questions.findIndex((q, i) => i > qIndex && !q.checked);
-    if (nextUnanswered !== -1) {
-      document.getElementById(`q${nextUnanswered}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else if (state.questions.every(q => q.checked)) {
-      document.querySelector('.finish-section')?.scrollIntoView({ behavior: 'smooth' });
+  const labels = card.querySelectorAll('.answer');
+  labels.forEach((lbl, idx) => {
+    lbl.classList.toggle('selected', q.userAnswers.includes(idx));
+    const input = lbl.querySelector('input');
+    if (input) input.checked = q.userAnswers.includes(idx);
+  });
+  
+  // Проверяем все ли отвечены для показа кнопки финиша
+  const st = variantsState[currentVariant];
+  const allAnswered = st.questions.every(q => q.userAnswers.length > 0);
+  
+  // Показываем/скрываем кнопку финиша
+  let finishSection = document.querySelector('.finish-section');
+  if (allAnswered && !finishSection) {
+    renderContent(); // Перерендер для показа кнопки
+  }
+}
+
+window.finishVariant = () => {
+  const st = variantsState[currentVariant];
+  
+  // Проверяем все ли отвечены
+  const unanswered = st.questions.filter(q => q.userAnswers.length === 0);
+  if (unanswered.length > 0) {
+    showNotification(`Жауап берілмеген: ${unanswered.length} сұрақ`, 'warning');
+    // Скролл к первому неотвеченному
+    document.getElementById(`q${st.questions.indexOf(unanswered[0])}`)?.scrollIntoView({behavior: 'smooth', block: 'center'});
+    return;
+  }
+  
+  // Проверяем все ответы
+  st.questions.forEach(q => {
+    q.checked = true;
+    if (isCorrect(q)) {
+      st.score += q.isMultiple ? 2 : 1;
     }
-  }, 300);
-};
-
-window.finishVariant = function() {
-  const state = variantsState[currentVariant];
-  state.completed = true;
-  saveLocalProgress();
-  renderVariantContent();
-  showNotification('🎉 Тест сәтті аяқталды!', 'success');
-};
-
-window.resetVariant = function() {
-  if (!confirm(`${currentVariant} вариантын нөлдеуге сенімдісіз бе? Барлық жауаптар жойылады!`)) return;
+  });
   
+  st.completed = true;
+  saveLocal();
+  renderContent();
+  renderSidebar();
+  showNotification('🎉 Тест аяқталды!', 'success');
+  
+  // Скролл к результатам
+  setTimeout(() => {
+    document.querySelector('.results-container')?.scrollIntoView({behavior: 'smooth'});
+  }, 100);
+};
+
+function renderResults(el, st) {
+  const correct = st.questions.filter(isCorrect).length;
+  const percent = Math.round((st.score / st.maxScore) * 100);
+  
+  el.innerHTML = `
+    <div class="results-container">
+      <div class="score-card">
+        <div class="score-circle">
+          <svg viewBox="0 0 36 36">
+            <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+            <path class="circle-progress" stroke-dasharray="${percent}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+          </svg>
+          <div class="score-value">${percent}%</div>
+        </div>
+        <div class="score-details">
+          <div class="score-main">${st.score} <span>/ ${st.maxScore}</span></div>
+          <div class="score-break">
+            <div>✓ Дұрыс: ${correct}/${st.questions.length}</div>
+            <div>✗ Қате: ${st.questions.length - correct}</div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="results-list">
+        <h3>Толық нәтижелер:</h3>
+        ${st.questions.map((q, i) => `
+          <div class="result-item ${isCorrect(q) ? 'correct' : 'wrong'}">
+            <div class="result-header">
+              <span class="r-num">${i + 1}</span>
+              <span class="r-badge">${isCorrect(q) ? '✓' : '✗'}</span>
+            </div>
+            <div class="r-text">${escapeHtml(q.text)}</div>
+            <div class="r-answers">
+              <div class=" yours">Сіз: ${q.userAnswers.map(j => escapeHtml(q.answers[j])).join(', ') || '-'}</div>
+              <div class="correct">Дұрыс: ${q.correct.map(j => escapeHtml(q.answers[j])).join(', ')}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      
+      <button class="btn-reset" onclick="resetVariant()">🔄 Вариантты қайта бастау</button>
+    </div>
+  `;
+}
+
+window.resetVariant = () => {
+  if (!confirm(`${currentVariant} нөлдеу?`)) return;
   delete variantsState[currentVariant];
   selectVariant(currentVariant);
-  showNotification('Вариант нөлденді', 'info');
+  showNotification('Нөлденді!', 'info');
 };
 
-window.showResults = function() {
-  renderVariantContent();
-};
-
-// ===== HELPERS =====
-function shuffleArray(array) {
-  const arr = [...array];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
+function isCorrect(q) {
+  const c = [...q.correct].sort((a, b) => a - b);
+  const u = [...q.userAnswers].sort((a, b) => a - b);
+  return c.length === u.length && c.every((v, i) => v === u[i]);
 }
 
-function isQuestionCorrect(q) {
-  const correct = [...q.correct].sort((a, b) => a - b);
-  const user = [...q.userAnswers].sort((a, b) => a - b);
-  
-  if (user.length !== correct.length) return false;
-  return correct.every((c, i) => c === user[i]);
+function escapeHtml(t) {
+  if (!t) return '';
+  return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function escapeHtml(text) {
-  if (!text) return '';
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+function showNotification(m, type = 'success') {
+  const n = document.createElement('div');
+  n.className = `notification ${type}`;
+  n.innerHTML = `<span class="icon">${type === 'success' ? '✓' : type === 'error' ? '✗' : '!'}</span>${m}`;
+  document.body.appendChild(n);
+  setTimeout(() => n.classList.add('show'), 10);
+  setTimeout(() => { n.classList.remove('show'); setTimeout(() => n.remove(), 300); }, 3000);
 }
 
-function showNotification(message, type = 'info') {
-  const existing = document.querySelector('.notification');
-  if (existing) existing.remove();
-  
-  const notif = document.createElement('div');
-  notif.className = `notification ${type}`;
-  notif.textContent = message;
-  document.body.appendChild(notif);
-  
-  setTimeout(() => notif.classList.add('show'), 10);
-  setTimeout(() => {
-    notif.classList.remove('show');
-    setTimeout(() => notif.remove(), 300);
-  }, 3000);
+function showAuth() {
+  document.getElementById('authOverlay').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+}
+
+function hideAuth() {
+  document.getElementById('authOverlay').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
 }
 
 // ===== STYLES =====
-const styles = document.createElement('style');
-styles.textContent = `
+const css = document.createElement('style');
+css.textContent = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    min-height: 100vh;
-    color: #333;
-    line-height: 1.6;
-  }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f0f2f5; color: #333; line-height: 1.6; }
   
   /* Auth */
-  #authOverlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.9);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 1000;
-  }
-  
-  .auth-box {
-    background: white;
-    padding: 40px;
-    border-radius: 16px;
-    width: 90%;
-    max-width: 400px;
-    text-align: center;
-  }
-  
-  .auth-box h2 { margin-bottom: 20px; color: #667eea; }
-  .auth-box input {
-    width: 100%;
-    padding: 12px;
-    margin: 8px 0;
-    border: 2px solid #e0e0e0;
-    border-radius: 8px;
-    font-size: 16px;
-  }
+  #authOverlay { position: fixed; inset: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+  .auth-box { background: white; padding: 40px; border-radius: 20px; width: 90%; max-width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }
+  .auth-box h2 { color: #667eea; margin-bottom: 24px; font-size: 28px; }
+  .auth-box input { width: 100%; padding: 14px 16px; margin: 8px 0; border: 2px solid #e0e0e0; border-radius: 12px; font-size: 16px; transition: all 0.3s; }
   .auth-box input:focus { outline: none; border-color: #667eea; }
-  .auth-box button {
-    width: 100%;
-    padding: 14px;
-    margin-top: 16px;
-    background: #667eea;
-    color: white;
-    border: none;
-    border-radius: 8px;
-    font-size: 16px;
-    cursor: pointer;
-    transition: all 0.3s;
-  }
-  .auth-box button:hover { background: #5568d3; transform: translateY(-2px); }
-  .auth-box button:disabled { opacity: 0.6; cursor: not-allowed; }
+  #authBtn { width: 100%; padding: 16px; margin-top: 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.2s; }
+  #authBtn:hover { transform: translateY(-2px); }
+  #authBtn:disabled { opacity: 0.6; cursor: not-allowed; }
   
-  #authStatus { margin-top: 12px; color: #e53935; font-size: 14px; }
-  
-  /* App Layout */
+  /* App */
   #app { display: flex; min-height: 100vh; }
   
+  /* Admin */
+  #adminPanel { position: fixed; top: 20px; right: 20px; z-index: 100; }
+  .admin-toggle { background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 12px 20px; border-radius: 50px; cursor: pointer; font-weight: 600; box-shadow: 0 4px 15px rgba(255,152,0,0.4); transition: transform 0.2s; }
+  .admin-toggle:hover { transform: scale(1.05); }
+  .admin-content { position: absolute; top: 60px; right: 0; background: white; padding: 20px; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); width: 300px; }
+  .admin-content h3 { margin-bottom: 16px; color: #333; }
+  .admin-content button { width: 100%; padding: 12px; margin: 8px 0; border: none; border-radius: 8px; background: #667eea; color: white; cursor: pointer; }
+  .user-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; font-size: 14px; }
+  .allowed { color: #4caf50; font-weight: bold; }
+  .denied { color: #f44336; font-weight: bold; }
+  
   /* Sidebar */
-  #sidebar {
-    width: 280px;
-    background: rgba(255,255,255,0.98);
-    padding: 20px;
-    position: fixed;
-    height: 100vh;
-    overflow-y: auto;
-    box-shadow: 2px 0 20px rgba(0,0,0,0.1);
-    z-index: 100;
-  }
-  
-  .sidebar-header {
-    margin-bottom: 20px;
-    padding-bottom: 15px;
-    border-bottom: 2px solid #e0e0e0;
-  }
-  
-  .sidebar-header h3 {
-    color: #667eea;
-    font-size: 1.3em;
-    margin-bottom: 10px;
-  }
-  
-  .sidebar-actions {
-    display: flex;
-    gap: 8px;
-  }
-  
-  .btn-small {
-    flex: 1;
-    padding: 8px;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 14px;
-    transition: all 0.2s;
-  }
-  .btn-save { background: #4caf50; color: white; }
-  .btn-load { background: #2196f3; color: white; }
-  .btn-small:hover { opacity: 0.9; transform: scale(1.05); }
-  .btn-small:disabled { opacity: 0.5; cursor: not-allowed; }
-  
+  #sidebar { width: 300px; background: white; padding: 24px; position: fixed; height: 100vh; overflow-y: auto; box-shadow: 4px 0 20px rgba(0,0,0,0.08); z-index: 50; }
+  .sidebar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 16px; border-bottom: 2px solid #f0f0f0; }
+  .sidebar-header h3 { color: #667eea; font-size: 20px; }
+  .cloud-btns { display: flex; gap: 8px; }
+  .cloud-btns button { width: 40px; height: 40px; border: none; border-radius: 10px; background: #f0f0f0; cursor: pointer; font-size: 18px; transition: all 0.2s; }
+  .cloud-btns button:hover { background: #667eea; color: white; transform: scale(1.1); }
+  .cloud-btns button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .variant-progress { text-align: center; padding: 12px; background: #f8f9fa; border-radius: 10px; margin-bottom: 16px; font-size: 14px; color: #666; }
   .variants-list { display: flex; flex-direction: column; gap: 8px; }
-  
-  .variant-btn {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 14px 16px;
-    background: white;
-    border: 2px solid #e0e0e0;
-    border-radius: 10px;
-    cursor: pointer;
-    transition: all 0.2s;
-    text-align: left;
-  }
-  
-  .variant-btn:hover {
-    border-color: #667eea;
-    transform: translateX(4px);
-    box-shadow: 0 2px 8px rgba(102,126,234,0.2);
-  }
-  
-  .variant-btn.active {
-    background: #667eea;
-    color: white;
-    border-color: #667eea;
-  }
-  
-  .variant-btn.in-progress { border-left: 4px solid #ff9800; }
+  .variant-btn { display: flex; justify-content: space-between; align-items: center; padding: 16px; border: 2px solid #e0e0e0; border-radius: 12px; background: white; cursor: pointer; transition: all 0.2s; }
+  .variant-btn:hover { border-color: #667eea; transform: translateX(4px); box-shadow: 0 4px 12px rgba(102,126,234,0.15); }
+  .variant-btn.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-color: transparent; }
   .variant-btn.completed { border-left: 4px solid #4caf50; }
+  .variant-btn.progress { border-left: 4px solid #ff9800; }
+  .v-name { font-weight: 600; }
+  .v-status { font-size: 12px; background: rgba(0,0,0,0.1); padding: 4px 10px; border-radius: 20px; }
+  .variant-btn.active .v-status { background: rgba(255,255,255,0.2); }
   
-  .variant-status {
-    font-size: 12px;
-    background: rgba(0,0,0,0.1);
-    padding: 2px 8px;
-    border-radius: 12px;
-  }
-  
-  /* Main Content */
-  #variantContent {
-    margin-left: 280px;
-    flex: 1;
-    padding: 30px;
-    max-width: 900px;
-  }
-  
-  .variant-header {
-    background: white;
-    padding: 24px;
-    border-radius: 16px;
-    margin-bottom: 24px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-  
-  .variant-title h2 {
-    color: #667eea;
-    font-size: 1.8em;
-    margin-bottom: 8px;
-  }
-  
-  .variant-stats {
-    color: #666;
-    font-size: 1.1em;
-  }
-  
-  .variant-actions { display: flex; gap: 12px; }
-  
-  .btn {
-    padding: 12px 24px;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 15px;
-    font-weight: 600;
-    transition: all 0.2s;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-  
-  .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
-  .btn:active { transform: translateY(0); }
-  
-  .btn-reset { background: #ff9800; color: white; }
-  .btn-primary { background: #2196f3; color: white; }
-  .btn-check { 
-    background: #667eea; 
-    color: white; 
-    width: 100%; 
-    margin-top: 16px;
-    justify-content: center;
-  }
-  .btn-finish {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    font-size: 18px;
-    padding: 16px 40px;
-  }
+  /* Content */
+  #variantContent { margin-left: 300px; flex: 1; padding: 32px; max-width: 900px; }
+  .variant-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; padding: 24px; background: white; border-radius: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+  .v-info h1 { color: #667eea; font-size: 32px; margin-bottom: 12px; }
+  .progress-bar { width: 300px; height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden; position: relative; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); transition: width 0.5s ease; }
+  .progress-bar span { position: absolute; right: 0; top: -20px; font-size: 12px; color: #666; }
+  .btn-reset { padding: 12px 24px; border: none; border-radius: 12px; background: #ff9800; color: white; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+  .btn-reset:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(255,152,0,0.3); }
   
   /* Questions */
-  .questions-container { display: flex; flex-direction: column; gap: 24px; }
+  .questions-list { display: flex; flex-direction: column; gap: 24px; }
+  .question-card { background: white; padding: 28px; border-radius: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); opacity: 0; transform: translateY(20px); transition: all 0.4s ease; }
+  .question-card.show { opacity: 1; transform: translateY(0); }
+  .question-card.correct { background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); }
+  .question-card.wrong { background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%); }
   
-  .question-card {
-    background: white;
-    border-radius: 16px;
-    padding: 28px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.08);
-    transition: all 0.3s;
-  }
+  .q-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .q-num { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px; font-weight: bold; font-size: 18px; }
+  .q-type { padding: 6px 14px; background: #f0f0f0; border-radius: 20px; font-size: 13px; color: #666; }
+  .q-result { margin-left: auto; padding: 8px 16px; border-radius: 20px; font-weight: bold; font-size: 14px; }
+  .correct .q-result { background: #4caf50; color: white; }
+  .wrong .q-result { background: #f44336; color: white; }
   
-  .question-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
-  .question-card.answered { opacity: 0.95; }
+  .q-text { font-size: 18px; line-height: 1.7; margin-bottom: 24px; color: #333; font-weight: 500; }
   
-  .question-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 16px;
-    flex-wrap: wrap;
-  }
+  .answers { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .answer { display: flex; align-items: center; padding: 16px 20px; background: #f8f9fa; border: 2px solid #e0e0e0; border-radius: 12px; cursor: pointer; transition: all 0.2s; gap: 12px; }
+  .answer:hover:not(.correct-ans):not(.wrong-ans) { border-color: #667eea; background: #e3f2fd; transform: translateX(4px); }
+  .answer.selected { border-color: #667eea; background: #e3f2fd; box-shadow: 0 2px 8px rgba(102,126,234,0.2); }
+  .answer.correct-ans { border-color: #4caf50; background: #e8f5e9; }
+  .answer.wrong-ans { border-color: #f44336; background: #ffebee; }
   
-  .q-number {
-    background: #667eea;
-    color: white;
-    padding: 6px 14px;
-    border-radius: 20px;
-    font-weight: bold;
-    font-size: 14px;
-  }
+  .answer input { width: 20px; height: 20px; accent-color: #667eea; }
+  .checkmark { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px; }
+  .correct-ans .checkmark { color: #4caf50; }
+  .wrong-ans .checkmark { color: #f44336; }
+  .a-text { flex: 1; font-size: 15px; }
   
-  .q-type {
-    background: #f0f0f0;
-    padding: 4px 12px;
-    border-radius: 15px;
-    font-size: 13px;
-    color: #666;
-  }
-  
-  .q-status {
-    margin-left: auto;
-    padding: 4px 12px;
-    border-radius: 15px;
-    font-size: 13px;
-    font-weight: bold;
-  }
-  .q-status.correct { background: #e8f5e9; color: #2e7d32; }
-  .q-status.wrong { background: #ffebee; color: #c62828; }
-  
-  .question-text {
-    font-size: 1.15em;
-    line-height: 1.7;
-    margin-bottom: 20px;
-    color: #333;
-    font-weight: 500;
-  }
-  
-  .question-image-wrapper {
-    margin: 20px 0;
-    text-align: center;
-    border-radius: 12px;
-    overflow: hidden;
-    background: #f5f5f5;
-  }
-  
-  .question-image {
-    max-width: 100%;
-    max-height: 400px;
-    cursor: zoom-in;
-    transition: transform 0.3s;
-    display: block;
-    margin: 0 auto;
-  }
-  .question-image:hover { transform: scale(1.02); }
-  
-  .answers-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 12px;
-  }
-  
-  .answer-option {
-    display: flex;
-    align-items: center;
-    padding: 16px;
-    background: #f8f9fa;
-    border: 2px solid #e9ecef;
-    border-radius: 12px;
-    cursor: pointer;
-    transition: all 0.2s;
-    gap: 12px;
-  }
-  
-  .answer-option:hover:not(.correct):not(.wrong) {
-    background: #e3f2fd;
-    border-color: #2196f3;
-    transform: translateX(4px);
-  }
-  
-  .answer-option.selected {
-    background: #e3f2fd;
-    border-color: #2196f3;
-    box-shadow: 0 2px 8px rgba(33,150,243,0.2);
-  }
-  
-  .answer-option.correct {
-    background: #e8f5e9;
-    border-color: #4caf50;
-    color: #2e7d32;
-  }
-  
-  .answer-option.wrong {
-    background: #ffebee;
-    border-color: #f44336;
-    color: #c62828;
-  }
-  
-  .answer-option input {
-    width: 18px;
-    height: 18px;
-    accent-color: #667eea;
-  }
-  
-  .answer-text { flex: 1; font-size: 15px; }
-  .answer-icon { font-weight: bold; font-size: 16px; }
-  
-  /* Finish Section */
-  .finish-section {
-    background: white;
-    padding: 40px;
-    border-radius: 16px;
-    text-align: center;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-    margin-top: 20px;
-  }
-  
-  .finish-message {
-    font-size: 1.3em;
-    color: #4caf50;
-    margin-bottom: 20px;
-    font-weight: 600;
-  }
+  /* Finish */
+  .finish-section { text-align: center; padding: 40px; background: white; border-radius: 20px; margin-top: 32px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.02); } }
+  .finish-msg { font-size: 20px; color: #4caf50; margin-bottom: 20px; font-weight: 600; }
+  .btn-finish { padding: 20px 48px; border: none; border-radius: 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-size: 18px; font-weight: 700; cursor: pointer; transition: all 0.3s; box-shadow: 0 8px 30px rgba(102,126,234,0.4); }
+  .btn-finish:hover { transform: translateY(-4px); box-shadow: 0 12px 40px rgba(102,126,234,0.5); }
+  .btn-finish small { display: block; font-size: 14px; opacity: 0.9; margin-top: 4px; font-weight: 400; }
   
   /* Results */
-  .results-container { animation: fadeIn 0.5s; }
+  .results-container { animation: fadeIn 0.6s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
   
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
+  .score-card { display: flex; align-items: center; gap: 40px; padding: 40px; background: white; border-radius: 24px; margin-bottom: 32px; box-shadow: 0 8px 30px rgba(0,0,0,0.1); }
+  .score-circle { position: relative; width: 150px; height: 150px; }
+  .score-circle svg { transform: rotate(-90deg); width: 100%; height: 100%; }
+  .circle-bg { fill: none; stroke: #e0e0e0; stroke-width: 3; }
+  .circle-progress { fill: none; stroke: url(#grad); stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray 1s ease; }
+  .score-value { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 32px; font-weight: bold; color: #667eea; }
+  .score-details { flex: 1; }
+  .score-main { font-size: 48px; font-weight: bold; color: #333; margin-bottom: 8px; }
+  .score-main span { font-size: 24px; color: #999; font-weight: 400; }
+  .score-break { display: flex; gap: 24px; font-size: 16px; color: #666; }
+  .score-break div { display: flex; align-items: center; gap: 8px; }
   
-  .score-card {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    padding: 40px;
-    border-radius: 20px;
-    text-align: center;
-    margin-bottom: 30px;
-    box-shadow: 0 10px 30px rgba(102,126,234,0.3);
-  }
-  
-  .score-circle {
-    width: 140px;
-    height: 140px;
-    border: 6px solid rgba(255,255,255,0.3);
-    border-radius: 50%;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    margin: 0 auto 20px;
-  }
-  
-  .score-value { font-size: 48px; font-weight: bold; }
-  .score-max { font-size: 24px; opacity: 0.8; }
-  .score-percentage { font-size: 36px; font-weight: bold; margin-bottom: 16px; }
-  .score-breakdown { opacity: 0.9; font-size: 16px; line-height: 1.8; }
-  
-  .results-details h3 {
-    color: #667eea;
-    margin-bottom: 20px;
-    font-size: 1.4em;
-  }
-  
-  .results-list { display: flex; flex-direction: column; gap: 12px; }
-  
-  .result-item {
-    background: white;
-    padding: 20px;
-    border-radius: 12px;
-    border-left: 4px solid;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-  }
-  
-  .result-item.correct { border-left-color: #4caf50; }
-  .result-item.wrong { border-left-color: #f44336; }
-  
-  .result-header {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 12px;
-    align-items: center;
-  }
-  
-  .result-num {
-    background: #f0f0f0;
-    padding: 4px 12px;
-    border-radius: 15px;
-    font-size: 13px;
-    font-weight: bold;
-  }
-  
-  .result-badge {
-    padding: 4px 12px;
-    border-radius: 15px;
-    font-size: 13px;
-    font-weight: bold;
-  }
-  .result-item.correct .result-badge { background: #e8f5e9; color: #2e7d32; }
-  .result-item.wrong .result-badge { background: #ffebee; color: #c62828; }
-  
-  .result-question { font-weight: 600; margin-bottom: 12px; color: #333; }
-  .result-answers { font-size: 14px; color: #666; display: flex; flex-direction: column; gap: 4px; }
-  .user-answer { color: #666; }
-  .correct-answer { color: #4caf50; font-weight: 500; }
+  .results-list h3 { margin-bottom: 20px; color: #333; font-size: 20px; }
+  .result-item { padding: 20px; margin-bottom: 12px; border-radius: 16px; border-left: 4px solid; animation: slideIn 0.4s ease; }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-20px); } to { opacity: 1; transform: translateX(0); } }
+  .result-item.correct { background: #e8f5e9; border-left-color: #4caf50; }
+  .result-item.wrong { background: #ffebee; border-left-color: #f44336; }
+  .result-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .r-num { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 8px; font-weight: bold; font-size: 14px; }
+  .r-badge { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-weight: bold; }
+  .correct .r-badge { background: #4caf50; color: white; }
+  .wrong .r-badge { background: #f44336; color: white; }
+  .r-text { font-weight: 500; margin-bottom: 12px; color: #333; }
+  .r-answers { font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
+  .yours { color: #666; }
+  .correct .r-answers .correct { color: #4caf50; font-weight: 600; }
   
   /* Notification */
-  .notification {
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    padding: 16px 24px;
-    border-radius: 12px;
-    color: white;
-    font-weight: 600;
-    transform: translateX(400px);
-    transition: transform 0.3s;
-    z-index: 1001;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-  }
+  .notification { position: fixed; top: 24px; right: 24px; padding: 16px 24px; background: white; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.2); display: flex; align-items: center; gap: 12px; transform: translateX(400px); transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); z-index: 1001; }
   .notification.show { transform: translateX(0); }
-  .notification.success { background: #4caf50; }
-  .notification.error { background: #f44336; }
-  .notification.warning { background: #ff9800; }
-  .notification.info { background: #2196f3; }
+  .notification .icon { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-weight: bold; }
+  .notification.success .icon { background: #e8f5e9; color: #4caf50; }
+  .notification.error .icon { background: #ffebee; color: #f44336; }
+  .notification.warning .icon { background: #fff3e0; color: #ff9800; }
   
   /* Top bar */
-  .top-bar {
-    position: fixed;
-    top: 0;
-    right: 0;
-    left: 280px;
-    background: rgba(255,255,255,0.95);
-    padding: 12px 30px;
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    z-index: 99;
-    backdrop-filter: blur(10px);
-  }
+  .top-bar { position: fixed; top: 0; left: 300px; right: 0; height: 60px; background: rgba(255,255,255,0.95); backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: flex-end; padding: 0 32px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); z-index: 40; }
+  #userEmail { color: #666; font-size: 14px; }
+  #logoutBtn { margin-left: 16px; padding: 8px 16px; border: none; border-radius: 8px; background: #f44336; color: white; cursor: pointer; font-size: 14px; }
   
-  .user-info {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-  }
-  
-  #logoutBtn {
-    background: #f44336;
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 14px;
-  }
-  
-  /* Responsive */
-  @media (max-width: 768px) {
-    #sidebar {
-      width: 100%;
-      position: relative;
-      height: auto;
-    }
-    #variantContent { margin-left: 0; }
-    .top-bar { left: 0; position: relative; }
-    .answers-grid { grid-template-columns: 1fr; }
-    .variant-header { flex-direction: column; align-items: flex-start; }
-  }
+  /* SVG gradient */
+  .score-circle defs { position: absolute; }
 `;
-document.head.appendChild(styles);
+document.head.appendChild(css);
+
+// Добавляем SVG gradient для кругового прогресса
+const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+svg.setAttribute("width", "0");
+svg.setAttribute("height", "0");
+svg.innerHTML = `
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+`;
+document.body.appendChild(svg);
