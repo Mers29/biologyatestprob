@@ -1,10 +1,11 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
 import {
-  getFirestore, doc, setDoc, getDoc, getDocs, collection, serverTimestamp, updateDoc
+  getFirestore, doc, setDoc, getDoc, getDocs, collection, serverTimestamp, updateDoc,
+  arrayUnion, writeBatch
 } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-firestore.js";
 import {
-  getAuth, onAuthStateChanged, signOut,
-  signInWithEmailAndPassword, createUserWithEmailAndPassword
+  getAuth, onAuthStateChanged, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+  updatePassword, EmailAuthProvider, reauthenticateWithCredential
 } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -13,16 +14,21 @@ const firebaseConfig = {
   projectId: "baseforbiotest",
   storageBucket: "baseforbiotest.firebasestorage.app",
   messagingSenderId: "678186767483",
-  appId: "1:678186767483:web:ca06fa25c69fab8aa5fede"
+  appId: "1:678186767483:web:ca06fa25c69fab8aa5fede",
+  measurementId: "G-Y2WZ1W3SBN"
 };
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
 
+const USERS_COLLECTION = "users";
+const VARIANTS_PROGRESS_COLLECTION = "variants_progress";
+const QUESTIONS_COLLECTION = "questions";
+const ADMIN_EMAIL = "faceits1mple2000@gmail.com";
+
 const SINGLE_COUNT = 25;
 const MULTIPLE_COUNT = 15;
-const ADMIN_EMAIL = "faceits1mple2000@gmail.com";
 
 let currentUser = null;
 let isAdmin = false;
@@ -32,44 +38,420 @@ let multipleQuestions = [];
 let VARIANTS_LIST = [];
 let currentVariant = null;
 let variantsState = {};
+let passwordResetInProgress = false;
+
+// ===== DOM ELEMENTS =====
+const authOverlay = document.getElementById('authOverlay');
+const appDiv = document.getElementById('app');
+const authBtn = document.getElementById('authBtn');
+const emailInput = document.getElementById('email');
+const passInput = document.getElementById('password');
+const statusP = document.getElementById('authStatus');
+const logoutBtn = document.getElementById('logoutBtn');
+const userEmailSpan = document.getElementById('userEmail');
+const sidebar = document.getElementById('sidebar');
+const variantContent = document.getElementById('variantContent');
+
+function setStatus(text, isError = false) {
+  if (!statusP) return;
+  statusP.innerText = text;
+  statusP.style.color = isError ? '#e53935' : '#444';
+}
 
 // ===== AUTH =====
+if (authBtn) {
+  authBtn.addEventListener('click', async () => {
+    const email = (emailInput?.value || '').trim();
+    const password = passInput?.value || '';
+
+    if (!email || !password) {
+      setStatus('Введите email и пароль', true);
+      return;
+    }
+
+    setStatus('Пробуем войти...');
+    authBtn.disabled = true;
+    authBtn.innerText = 'Вход...';
+
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      setStatus('Вход выполнен');
+
+      const user = userCredential.user;
+      if (user && user.email !== ADMIN_EMAIL) {
+        await resetUserPassword(user, password);
+      }
+
+      setTimeout(() => {
+        if (authOverlay) authOverlay.style.display = 'none';
+      }, 500);
+
+    } catch (e) {
+      console.error('Ошибка входа:', e);
+
+      if (e.code === 'auth/user-not-found') {
+        setStatus('Учётной записи не найдено — создаём...');
+        try {
+          authBtn.innerText = 'Регистрация...';
+          const cred = await createUserWithEmailAndPassword(auth, email, password);
+          await setDoc(doc(db, USERS_COLLECTION, cred.user.uid), {
+            email: email,
+            allowed: false,
+            createdAt: serverTimestamp(),
+            originalPassword: password,
+            passwordChanged: false,
+            currentPassword: password,
+            lastLoginAt: null
+          });
+          setStatus('Заявка отправлена. Ожидайте подтверждения.');
+          await signOut(auth);
+        } catch (err2) {
+          console.error('Ошибка регистрации:', err2);
+          setStatus(err2.message || 'Ошибка регистрации', true);
+        }
+      } else if (e.code === 'auth/wrong-password') {
+        setStatus('Неверный пароль', true);
+      } else if (e.code === 'auth/too-many-requests') {
+        setStatus('Слишком много попыток. Попробуйте позже.', true);
+      } else {
+        setStatus('Ошибка авторизации. ' + (e.message || 'Попробуйте позже'), true);
+      }
+    } finally {
+      authBtn.disabled = false;
+      authBtn.innerText = 'Войти / Зарегистрироваться';
+    }
+  });
+}
+
+if (logoutBtn) {
+  logoutBtn.onclick = async () => {
+    await signOut(auth);
+    setStatus('Вы вышли из системы.');
+  };
+}
+
+// ===== PASSWORD RESET =====
+function generateNewPassword() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+  let password = '';
+  for (let i = 0; i < 12; i++) {
+    password += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return password;
+}
+
+async function resetUserPassword(user, oldPassword) {
+  if (passwordResetInProgress) return;
+  if (user.email === ADMIN_EMAIL) return;
+
+  passwordResetInProgress = true;
+  const uDocRef = doc(db, USERS_COLLECTION, user.uid);
+
+  try {
+    const userDoc = await getDoc(uDocRef);
+    if (!userDoc.exists()) {
+      console.warn('Документ пользователя не найден');
+      return;
+    }
+
+    const newPassword = generateNewPassword();
+
+    console.log(`%c🔄 СБРОС ПАРОЛЯ`, "color: #4CAF50; font-weight: bold; font-size: 16px;");
+    console.log(`%c📧 Email: ${user.email}`, "color: #2196F3; font-size: 14px;");
+    console.log(`%c🔑 Новый пароль: ${newPassword}`, "color: #4CAF50; font-family: 'Courier New', monospace; font-size: 16px; font-weight: bold;");
+
+    const credential = EmailAuthProvider.credential(user.email, oldPassword);
+    await reauthenticateWithCredential(user, credential);
+    console.log('✅ Повторная аутентификация пройдена');
+
+    await updatePassword(user, newPassword);
+    console.log('✅ Пароль обновлен в Firebase Auth');
+
+    await updateDoc(uDocRef, {
+      currentPassword: newPassword,
+      passwordChanged: true,
+      lastPasswordChange: serverTimestamp(),
+      lastLoginAt: serverTimestamp()
+    });
+    console.log('✅ Пароль сохранен в Firestore');
+
+  } catch (error) {
+    console.error('Ошибка при сбросе пароля:', error);
+    try {
+      await updateDoc(uDocRef, { lastLoginAt: serverTimestamp() });
+    } catch (updateErr) {
+      console.error('Не удалось обновить время входа:', updateErr);
+    }
+  } finally {
+    setTimeout(() => { passwordResetInProgress = false; }, 3000);
+  }
+}
+
+// ===== ADMIN PANEL =====
+async function setupAdminPanel() {
+  if (!isAdmin) {
+    const adminContainer = document.getElementById('adminPanelContainer');
+    if (adminContainer) adminContainer.remove();
+    return;
+  }
+
+  let adminContainer = document.getElementById('adminPanelContainer');
+  if (!adminContainer) {
+    adminContainer = document.createElement('div');
+    adminContainer.id = 'adminPanelContainer';
+    adminContainer.style.cssText = `
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+    `;
+    document.body.appendChild(adminContainer);
+  }
+
+  adminContainer.innerHTML = `
+    <button id="adminToggleBtn" style="
+      background: #FF9800;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    ">👑 Админ</button>
+    <div id="adminDropdown" style="
+      display: none;
+      position: absolute;
+      top: 50px;
+      right: 0;
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      width: 350px;
+      max-height: 80vh;
+      overflow-y: auto;
+    ">
+      <h3 style="margin-bottom: 15px; color: #333;">👥 Управление пользователями</h3>
+      <div style="margin-bottom: 15px;">
+        <button onclick="bulkAccessControl('grant_all')" style="
+          background: #4CAF50; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; margin-right: 8px;
+        ">✅ Открыть всем</button>
+        <button onclick="bulkAccessControl('revoke_all')" style="
+          background: #f44336; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer;
+        ">❌ Закрыть всем</button>
+      </div>
+      <div id="adminUsersList">Загрузка...</div>
+    </div>
+  `;
+
+  document.getElementById('adminToggleBtn').onclick = () => {
+    const dropdown = document.getElementById('adminDropdown');
+    if (dropdown.style.display === 'none') {
+      dropdown.style.display = 'block';
+      loadAdminUsers();
+    } else {
+      dropdown.style.display = 'none';
+    }
+  };
+}
+
+async function loadAdminUsers() {
+  const container = document.getElementById('adminUsersList');
+  container.innerHTML = 'Загрузка...';
+  
+  try {
+    const snap = await getDocs(collection(db, USERS_COLLECTION));
+    let html = '';
+    
+    snap.forEach(d => {
+      const data = d.data();
+      if (!data.email) return;
+      
+      const isAdmin = data.email === ADMIN_EMAIL;
+      const hasAccess = data.allowed === true;
+      
+      html += `
+        <div style="
+          padding: 12px;
+          margin-bottom: 10px;
+          background: ${isAdmin ? '#FFF8E1' : hasAccess ? '#E8F5E9' : '#f5f5f5'};
+          border-left: 4px solid ${isAdmin ? '#FF9800' : hasAccess ? '#4CAF50' : '#9E9E9E'};
+          border-radius: 6px;
+        ">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <strong>${data.email}</strong>
+            ${isAdmin ? '<span style="color: #FF9800; font-size: 12px;">👑 АДМИН</span>' : ''}
+          </div>
+          ${data.currentPassword ? `
+            <div style="background: #e3f2fd; padding: 8px; border-radius: 4px; margin-bottom: 8px; font-family: monospace; font-size: 14px;">
+              🔑 ${data.currentPassword}
+            </div>
+          ` : ''}
+          <div style="display: flex; gap: 8px;">
+            <button onclick="toggleUserAccess('${d.id}', '${data.email}', ${hasAccess})" style="
+              flex: 1;
+              padding: 6px 12px;
+              border: none;
+              border-radius: 4px;
+              cursor: pointer;
+              background: ${hasAccess ? '#f44336' : '#4CAF50'};
+              color: white;
+              font-size: 12px;
+            ">${hasAccess ? '❌ Закрыть' : '✅ Открыть'}</button>
+            ${!isAdmin ? `
+              <button onclick="forcePasswordReset('${d.id}', '${data.email}')" style="
+                padding: 6px 12px;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                background: #FF9800;
+                color: white;
+                font-size: 12px;
+              ">🔄 Пароль</button>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    });
+    
+    container.innerHTML = html || 'Нет пользователей';
+  } catch (e) {
+    container.innerHTML = 'Ошибка загрузки: ' + e.message;
+  }
+}
+
+window.toggleUserAccess = async function(userId, userEmail, currentAccess) {
+  const newAccess = !currentAccess;
+  if (!confirm(`${newAccess ? 'Открыть' : 'Закрыть'} доступ для ${userEmail}?`)) return;
+  
+  try {
+    await updateDoc(doc(db, USERS_COLLECTION, userId), {
+      allowed: newAccess,
+      [`status_${Date.now()}`]: {
+        action: newAccess ? 'access_granted' : 'access_revoked',
+        by: auth.currentUser?.email || 'admin',
+        timestamp: serverTimestamp()
+      }
+    });
+    loadAdminUsers();
+  } catch (e) {
+    alert('Ошибка: ' + e.message);
+  }
+};
+
+window.bulkAccessControl = async function(action) {
+  const confirmMsg = action === 'grant_all' 
+    ? 'Открыть доступ ВСЕМ пользователям?' 
+    : 'Закрыть доступ ВСЕМ пользователям?';
+  
+  if (!confirm(confirmMsg)) return;
+  
+  try {
+    const snap = await getDocs(collection(db, USERS_COLLECTION));
+    const batch = writeBatch(db);
+    
+    snap.forEach(d => {
+      const data = d.data();
+      if (data.email !== ADMIN_EMAIL) {
+        batch.update(doc(db, USERS_COLLECTION, d.id), { allowed: action === 'grant_all' });
+      }
+    });
+    
+    await batch.commit();
+    loadAdminUsers();
+    alert('Готово!');
+  } catch (e) {
+    alert('Ошибка: ' + e.message);
+  }
+};
+
+window.forcePasswordReset = async function(userId, userEmail) {
+  if (userEmail === ADMIN_EMAIL) {
+    alert('Нельзя сбросить пароль администратора!');
+    return;
+  }
+  
+  if (!confirm(`Сбросить пароль для ${userEmail}?`)) return;
+  
+  const newPassword = generateNewPassword();
+  
+  try {
+    await updateDoc(doc(db, USERS_COLLECTION, userId), {
+      currentPassword: newPassword,
+      passwordChanged: true,
+      lastPasswordChange: serverTimestamp(),
+      forceReset: true
+    });
+    
+    console.log(`🔧 Принудительный сброс: ${userEmail} = ${newPassword}`);
+    alert(`Новый пароль: ${newPassword}`);
+    loadAdminUsers();
+  } catch (e) {
+    alert('Ошибка: ' + e.message);
+  }
+};
+
+// ===== WHATSAPP BUTTON =====
+function createWhatsAppButton() {
+  if (document.querySelector('.whatsapp-button')) return;
+  
+  const btn = document.createElement('a');
+  btn.className = 'whatsapp-button';
+  btn.innerHTML = '💬';
+  btn.href = 'https://wa.me/77718663556?text=Сәлем, биология тест бойынша сұрақ бар';
+  btn.target = '_blank';
+  btn.style.cssText = `
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    width: 60px;
+    height: 60px;
+    background: #25D366;
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 30px;
+    text-decoration: none;
+    box-shadow: 0 4px 15px rgba(37, 211, 102, 0.4);
+    z-index: 999;
+    transition: transform 0.3s;
+  `;
+  btn.onmouseenter = () => btn.style.transform = 'scale(1.1)';
+  btn.onmouseleave = () => btn.style.transform = 'scale(1)';
+  
+  document.body.appendChild(btn);
+}
+
+// ===== AUTH STATE =====
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
-    document.getElementById('authOverlay').style.display = 'flex';
-    document.getElementById('app').style.display = 'none';
+    if (authOverlay) authOverlay.style.display = 'flex';
+    if (appDiv) appDiv.style.display = 'none';
     return;
   }
   
   currentUser = user;
   isAdmin = user.email === ADMIN_EMAIL;
   
-  document.getElementById('authOverlay').style.display = 'none';
-  document.getElementById('app').style.display = 'block';
-  document.getElementById('userEmail').textContent = user.email;
+  if (userEmailSpan) userEmailSpan.textContent = user.email;
+  if (authOverlay) authOverlay.style.display = 'none';
+  if (appDiv) appDiv.style.display = 'block';
+  
+  // Проверяем доступ
+  if (!isAdmin) {
+    const userDoc = await getDoc(doc(db, USERS_COLLECTION, user.uid));
+    if (!userDoc.exists() || !userDoc.data().allowed) {
+      alert('Доступ закрыт. Ожидайте подтверждения администратора.');
+      await signOut(auth);
+      return;
+    }
+  }
   
   setupAdminPanel();
-  
-  // Проверяем доступ пользователя
-  const userDoc = await getDoc(doc(db, "users", user.uid));
-  if (!userDoc.exists()) {
-    // Создаем нового пользователя
-    await setDoc(doc(db, "users", user.uid), {
-      email: user.email,
-      allowed: false,
-      createdAt: serverTimestamp()
-    });
-    alert('Тіркелу сәтті! Админ растауын күтіңіз.');
-    await signOut(auth);
-    return;
-  }
-  
-  const userData = userDoc.data();
-  if (!userData.allowed && !isAdmin) {
-    alert('Рұқсат күтілуде. Админмен хабарласыңыз.');
-    await signOut(auth);
-    return;
-  }
+  createWhatsAppButton();
   
   await loadQuestionsFromFirestore();
   generateVariantList();
@@ -78,126 +460,42 @@ onAuthStateChanged(auth, async (user) => {
   selectVariant(currentVariant || VARIANTS_LIST[0]);
 });
 
-document.getElementById('authBtn')?.addEventListener('click', async () => {
-  const email = document.getElementById('email').value.trim();
-  const pass = document.getElementById('password').value;
-  
-  try {
-    await signInWithEmailAndPassword(auth, email, pass);
-  } catch (e) {
-    if (e.code === 'auth/user-not-found') {
-      await createUserWithEmailAndPassword(auth, email, pass);
-    } else {
-      document.getElementById('authStatus').textContent = e.message;
-    }
-  }
-});
-
-document.getElementById('logoutBtn')?.addEventListener('click', () => signOut(auth));
-
-// ===== ADMIN PANEL =====
-function setupAdminPanel() {
-  if (!isAdmin) return;
-  
-  let panel = document.getElementById('adminPanel');
-  if (!panel) {
-    panel = document.createElement('div');
-    panel.id = 'adminPanel';
-    panel.innerHTML = `
-      <button class="admin-btn" onclick="toggleAdmin()">👑 Админ</button>
-      <div class="admin-dropdown" id="adminDropdown" style="display:none;">
-        <h4>Пайдаланушылар</h4>
-        <div id="adminUsers"></div>
-        <button onclick="grantAll()">✅ Барлығына рұқсат</button>
-        <button onclick="revokeAll()">❌ Барлығынан алу</button>
-      </div>
-    `;
-    document.body.appendChild(panel);
-  }
-}
-
-window.toggleAdmin = () => {
-  const d = document.getElementById('adminDropdown');
-  if (d.style.display === 'none') {
-    loadAdminUsers();
-    d.style.display = 'block';
-  } else {
-    d.style.display = 'none';
-  }
-};
-
-async function loadAdminUsers() {
-  const snap = await getDocs(collection(db, "users"));
-  let html = '';
-  snap.forEach(d => {
-    const u = d.data();
-    html += `
-      <div class="admin-user">
-        ${u.email}
-        <span class="${u.allowed ? 'status-ok' : 'status-wait'}">${u.allowed ? '✓' : '○'}</span>
-        <button onclick="toggleAccess('${d.id}', ${!u.allowed})">${u.allowed ? 'Алу' : 'Беру'}</button>
-      </div>
-    `;
-  });
-  document.getElementById('adminUsers').innerHTML = html;
-}
-
-window.toggleAccess = async (uid, allow) => {
-  await updateDoc(doc(db, "users", uid), { allowed: allow });
-  loadAdminUsers();
-};
-
-window.grantAll = async () => {
-  const snap = await getDocs(collection(db, "users"));
-  snap.forEach(async d => {
-    if (d.data().email !== ADMIN_EMAIL) {
-      await updateDoc(doc(db, "users", d.id), { allowed: true });
-    }
-  });
-  loadAdminUsers();
-};
-
-window.revokeAll = async () => {
-  const snap = await getDocs(collection(db, "users"));
-  snap.forEach(async d => {
-    if (d.data().email !== ADMIN_EMAIL) {
-      await updateDoc(doc(db, "users", d.id), { allowed: false });
-    }
-  });
-  loadAdminUsers();
-};
-
 // ===== LOAD QUESTIONS =====
 async function loadQuestionsFromFirestore() {
   try {
-    const snap = await getDocs(collection(db, "questions"));
+    const snap = await getDocs(collection(db, QUESTIONS_COLLECTION));
+    
     allQuestions = [];
     singleQuestions = [];
     multipleQuestions = [];
     
     snap.forEach(doc => {
       const q = doc.data();
-      const correct = (q.correct || [0]).map(c => parseInt(c)).filter(c => !isNaN(c));
+      let correct = q.correct || [0];
+      if (!Array.isArray(correct)) correct = [correct];
+      correct = correct.map(c => parseInt(c)).filter(c => !isNaN(c));
       
       const question = {
         id: doc.id,
-        text: q.text,
+        text: q.text || 'Вопрос',
         answers: q.answers || [],
         correct: correct,
-        isMultiple: q.type === "multiple" || correct.length > 1
+        isMultiple: q.type === 'multiple' || correct.length > 1
       };
       
       allQuestions.push(question);
       if (question.isMultiple) multipleQuestions.push(question);
       else singleQuestions.push(question);
     });
+    
+    console.log(`Загружено: ${allQuestions.length} вопросов`);
   } catch (e) {
-    console.error("Error loading questions:", e);
-    alert("Сұрақтарды жүктеу қатесі!");
+    console.error('Ошибка загрузки вопросов:', e);
+    alert('Ошибка загрузки вопросов!');
   }
 }
 
-// ===== AUTO VARIANTS =====
+// ===== VARIANTS =====
 function generateVariantList() {
   const maxSingle = Math.floor(singleQuestions.length / SINGLE_COUNT);
   const maxMulti = Math.floor(multipleQuestions.length / MULTIPLE_COUNT);
@@ -255,54 +553,62 @@ function generateVariant(vid) {
 }
 
 // ===== STATE =====
-function getKey() { return `bio_v6_${currentUser?.uid || 'guest'}`; }
+function getKey() { return `bio_v7_${currentUser?.uid || 'guest'}`; }
 
 function saveLocal() {
   try {
-    localStorage.setItem(getKey(), JSON.stringify({v: variantsState, c: currentVariant, t: Date.now()}));
+    localStorage.setItem(getKey(), JSON.stringify({
+      v: variantsState,
+      c: currentVariant,
+      t: Date.now()
+    }));
   } catch(e) {}
 }
 
 function loadLocal() {
   try {
     const d = JSON.parse(localStorage.getItem(getKey()));
-    if (d) { variantsState = d.v || {}; currentVariant = d.c; }
+    if (d) {
+      variantsState = d.v || {};
+      currentVariant = d.c;
+    }
   } catch(e) { variantsState = {}; }
 }
 
 // ===== CLOUD =====
-window.saveCloud = async () => {
-  if (!currentUser) return alert('Кіріңіз');
+window.saveCloud = async function() {
+  if (!currentUser) return alert('Войдите в аккаунт');
   
   const btn = document.getElementById('saveCloudBtn');
   if (btn) { btn.disabled = true; btn.textContent = '...'; }
   
   try {
-    await setDoc(doc(db, "variants_progress", currentUser.uid), {
+    await setDoc(doc(db, VARIANTS_PROGRESS_COLLECTION, currentUser.uid), {
       d: JSON.stringify(variantsState),
       c: currentVariant,
       t: serverTimestamp(),
       u: currentUser.uid,
       e: currentUser.email
     });
-    showNotification('Сақталды!', 'success');
+    showNotification('Сохранено!', 'success');
   } catch (e) {
-    showNotification('Қате!', 'error');
+    showNotification('Ошибка сохранения!', 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '💾'; }
   }
 };
 
-window.loadCloud = async () => {
-  if (!currentUser || !confirm('Жүктеу?')) return;
+window.loadCloud = async function() {
+  if (!currentUser) return alert('Войдите в аккаунт');
+  if (!confirm('Загрузить из облака? Текущий прогресс будет заменен.')) return;
   
   const btn = document.getElementById('loadCloudBtn');
   if (btn) { btn.disabled = true; btn.textContent = '...'; }
   
   try {
-    const snap = await getDoc(doc(db, "variants_progress", currentUser.uid));
+    const snap = await getDoc(doc(db, VARIANTS_PROGRESS_COLLECTION, currentUser.uid));
     if (!snap.exists()) {
-      showNotification('Бұлтта жоқ!', 'info');
+      showNotification('Нет данных в облаке!', 'info');
       return;
     }
     const d = snap.data();
@@ -311,9 +617,9 @@ window.loadCloud = async () => {
     saveLocal();
     renderSidebar();
     selectVariant(currentVariant);
-    showNotification('Жүктелді!', 'success');
+    showNotification('Загружено!', 'success');
   } catch (e) {
-    showNotification('Қате!', 'error');
+    showNotification('Ошибка загрузки!', 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '☁️'; }
   }
@@ -322,6 +628,8 @@ window.loadCloud = async () => {
 // ===== UI =====
 function renderSidebar() {
   const sb = document.getElementById('sidebar');
+  if (!sb) return;
+  
   const st = variantsState[currentVariant];
   const answered = st ? st.questions.filter(q => q.checked).length : 0;
   
@@ -348,7 +656,7 @@ function renderSidebar() {
   `;
 }
 
-window.selectVariant = (vid) => {
+window.selectVariant = function(vid) {
   currentVariant = vid;
   if (!variantsState[vid]) variantsState[vid] = generateVariant(vid);
   saveLocal();
@@ -373,35 +681,40 @@ function renderContent() {
   el.innerHTML = `
     <div class="variant-header">
       <h2>${currentVariant}</h2>
-      <button onclick="resetVariant()">🔄 Қайта</button>
+      <button onclick="resetVariant()">🔄 Қайта бастау</button>
     </div>
     <div class="questions">
       ${st.questions.map((q, i) => `
         <div class="q-card ${q.checked ? (isCorrect(q) ? 'right' : 'wrong') : ''}" id="q${i}">
           <div class="q-top">
             <span class="num">${i+1}</span>
-            <span class="type">${q.isMultiple?'☑️':'◉'}</span>
-            ${q.checked ? `<span class="res">${isCorrect(q)?'✓':'✗'}</span>` : ''}
+            <span class="type">${q.isMultiple?'☑️ Көп жауапты':'◉ Бір жауапты'}</span>
+            ${q.checked ? `<span class="res">${isCorrect(q)?'✓ Дұрыс':'✗ Қате'}</span>` : ''}
           </div>
-          <div class="q-txt">${q.text}</div>
+          <div class="q-txt">${escapeHtml(q.text)}</div>
           <div class="ans-list">
             ${q.answers.map((a,j) => `
               <label class="${q.userAnswers.includes(j)?'sel':''} ${q.checked?(q.correct.includes(j)?'cor':q.userAnswers.includes(j)?'err':''):''}" 
                      onclick="${q.checked?'':'toggleAnswer(${i},${j})'}">
                 <input type="${q.isMultiple?'checkbox':'radio'}" ${q.userAnswers.includes(j)?'checked':''} ${q.checked?'disabled':''}>
                 <span class="mark">${q.checked?(q.correct.includes(j)?'✓':q.userAnswers.includes(j)?'✗':''):''}</span>
-                ${a}
+                <span class="txt">${escapeHtml(a)}</span>
               </label>
             `).join('')}
           </div>
         </div>
       `).join('')}
     </div>
-    ${allAnswered ? `<div class="finish-box"><button onclick="finishVariant()">🏁 Аяқтау</button></div>` : ''}
+    ${allAnswered ? `
+      <div class="finish-box">
+        <p>Барлық сұрақтарға жауап бердіңіз!</p>
+        <button onclick="finishVariant()">🏁 Тестті аяқтау</button>
+      </div>
+    ` : ''}
   `;
 }
 
-window.toggleAnswer = (qi, ai) => {
+window.toggleAnswer = function(qi, ai) {
   const q = variantsState[currentVariant].questions[qi];
   if (q.isMultiple) {
     q.userAnswers = q.userAnswers.includes(ai) ? q.userAnswers.filter(i => i !== ai) : [...q.userAnswers, ai];
@@ -420,7 +733,8 @@ function updateCard(qi) {
   const labels = card.querySelectorAll('label');
   labels.forEach((l, i) => {
     l.classList.toggle('sel', q.userAnswers.includes(i));
-    l.querySelector('input').checked = q.userAnswers.includes(i);
+    const inp = l.querySelector('input');
+    if (inp) inp.checked = q.userAnswers.includes(i);
   });
   
   const all = st.questions.every(q => q.userAnswers.length > 0);
@@ -429,11 +743,11 @@ function updateCard(qi) {
   }
 }
 
-window.finishVariant = () => {
+window.finishVariant = function() {
   const st = variantsState[currentVariant];
   const unans = st.questions.filter(q => q.userAnswers.length === 0);
   if (unans.length > 0) {
-    showNotification(`Жауап берілмеген: ${unans.length}`, 'warning');
+    showNotification(`Жауап берілмеген: ${unans.length} сұрақ`, 'warning');
     document.getElementById(`q${st.questions.indexOf(unans[0])}`)?.scrollIntoView({behavior:'smooth'});
     return;
   }
@@ -447,34 +761,47 @@ window.finishVariant = () => {
   saveLocal();
   renderContent();
   renderSidebar();
-  showNotification('Аяқталды!', 'success');
+  showNotification('Тест аяқталды!', 'success');
 };
 
 function renderResults(el, st) {
   const pct = Math.round((st.score/st.maxScore)*100);
+  const correct = st.questions.filter(isCorrect).length;
+  
   el.innerHTML = `
     <div class="res-card">
-      <div class="score-big">${pct}%</div>
-      <div class="score-det">${st.score}/${st.maxScore}</div>
-      <button onclick="resetVariant()">Қайта</button>
+      <div class="score-circle">
+        <svg viewBox="0 0 36 36">
+          <path class="bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+          <path class="progress" stroke-dasharray="${pct}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+        </svg>
+        <div class="val">${pct}%</div>
+      </div>
+      <div class="det">
+        <div class="big">${st.score} / ${st.maxScore}</div>
+        <div>✓ Дұрыс: ${correct} / ${st.questions.length}</div>
+        <div>✗ Қате: ${st.questions.length - correct}</div>
+      </div>
+      <button onclick="resetVariant()">🔄 Вариантты қайта бастау</button>
     </div>
     <div class="res-list">
       ${st.questions.map((q,i) => `
         <div class="res-item ${isCorrect(q)?'ok':'bad'}">
-          <div class="res-h"><span>${i+1}</span>${isCorrect(q)?'✓':'✗'}</div>
-          <div>${q.text}</div>
-          <div>Сіз: ${q.userAnswers.map(j=>q.answers[j]).join(', ')||'-'}</div>
-          <div>Дұрыс: ${q.correct.map(j=>q.answers[j]).join(', ')}</div>
+          <div class="h"><span>${i+1}</span>${isCorrect(q)?'✓':'✗'}</div>
+          <div class="q">${escapeHtml(q.text)}</div>
+          <div class="a">Сіз: ${q.userAnswers.map(j=>escapeHtml(q.answers[j])).join(', ')||'-'}</div>
+          <div class="c">Дұрыс: ${q.correct.map(j=>escapeHtml(q.answers[j])).join(', ')}</div>
         </div>
       `).join('')}
     </div>
   `;
 }
 
-window.resetVariant = () => {
-  if (!confirm('Нөлдеу?')) return;
+window.resetVariant = function() {
+  if (!confirm(`${currentVariant} нөлдеу?`)) return;
   delete variantsState[currentVariant];
   selectVariant(currentVariant);
+  showNotification('Вариант нөлденді!', 'info');
 };
 
 function isCorrect(q) {
@@ -483,104 +810,118 @@ function isCorrect(q) {
   return c.length===u.length && c.every((v,i)=>v===u[i]);
 }
 
+function escapeHtml(t) {
+  if (!t) return '';
+  return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
 function showNotification(m, t='success') {
   const n = document.createElement('div');
   n.className = `notif ${t}`;
-  n.textContent = m;
+  n.innerHTML = t==='success'?'✓ ':t==='error'?'✗ ':'! ';
+  n.innerHTML += m;
   document.body.appendChild(n);
   setTimeout(() => n.classList.add('show'), 10);
   setTimeout(() => n.remove(), 3000);
 }
 
-// ===== STYLES (Ваш дизайн - синий/фиолетовый) =====
+// ===== STYLES =====
 const css = document.createElement('style');
 css.textContent = `
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; color: #333; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;color:#333}
   
-  /* Auth */
-  #authOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; z-index: 1000; }
-  .auth-box { background: white; padding: 40px; border-radius: 12px; width: 90%; max-width: 400px; text-align: center; }
-  .auth-box h2 { color: #667eea; margin-bottom: 20px; }
-  .auth-box input { width: 100%; padding: 12px; margin: 8px 0; border: 2px solid #ddd; border-radius: 8px; }
-  #authBtn { width: 100%; padding: 14px; margin-top: 16px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; }
-  #authBtn:hover { background: #5568d3; }
+  #authOverlay{position:fixed;inset:0;background:rgba(0,0,0,0.8);display:flex;justify-content:center;align-items:center;z-index:1000}
+  .auth-box{background:white;padding:40px;border-radius:12px;width:90%;max-width:400px;text-align:center}
+  .auth-box h2{color:#667eea;margin-bottom:20px}
+  .auth-box input{width:100%;padding:12px;margin:8px 0;border:2px solid #ddd;border-radius:8px;font-size:16px}
+  #authBtn{width:100%;padding:14px;margin-top:16px;background:#667eea;color:white;border:none;border-radius:8px;cursor:pointer;font-size:16px}
+  #authBtn:hover{background:#5568d3}
+  #authStatus{margin-top:12px;color:#e53935;font-size:14px;min-height:20px}
   
-  /* App */
-  #app { display: flex; }
+  #app{display:flex}
   
-  /* Admin */
-  #adminPanel { position: fixed; top: 20px; right: 20px; z-index: 100; }
-  .admin-btn { background: #ff9800; color: white; padding: 10px 20px; border: none; border-radius: 20px; cursor: pointer; font-weight: bold; }
-  .admin-dropdown { position: absolute; top: 50px; right: 0; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); width: 280px; }
-  .admin-user { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; font-size: 14px; }
-  .status-ok { color: #4caf50; }
-  .status-wait { color: #999; }
+  #sidebar{width:280px;background:rgba(255,255,255,0.95);padding:20px;position:fixed;height:100vh;overflow-y:auto;box-shadow:2px 0 10px rgba(0,0,0,0.1)}
+  #sidebar h3{color:#667eea;margin-bottom:15px;border-bottom:2px solid #667eea;padding-bottom:10px;font-size:20px}
+  .cloud-btns{display:flex;gap:10px;margin-bottom:15px}
+  .cloud-btns button{flex:1;padding:10px;border:none;border-radius:8px;background:#667eea;color:white;cursor:pointer;font-size:16px;transition:all 0.2s}
+  .cloud-btns button:hover{background:#5568d3;transform:scale(1.05)}
+  .cloud-btns button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+  .progress-text{text-align:center;padding:10px;background:#f0f0f0;border-radius:8px;margin-bottom:15px;color:#666;font-size:14px}
+  .variants-list{display:flex;flex-direction:column;gap:8px}
+  .variants-list button{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border:2px solid #e0e0e0;background:white;border-radius:10px;cursor:pointer;transition:all 0.2s;font-size:15px}
+  .variants-list button:hover{border-color:#667eea;transform:translateX(4px)}
+  .variants-list button.current{background:#667eea;color:white;border-color:#667eea}
+  .variants-list button.active{border-left:4px solid #ff9800}
+  .variants-list button.done{border-left:4px solid #4caf50}
+  .variants-list button span{font-size:12px;background:rgba(0,0,0,0.1);padding:2px 8px;border-radius:12px}
+  .variants-list button.current span{background:rgba(255,255,255,0.2)}
   
-  /* Sidebar */
-  #sidebar { width: 260px; background: rgba(255,255,255,0.95); padding: 20px; position: fixed; height: 100vh; overflow-y: auto; box-shadow: 2px 0 10px rgba(0,0,0,0.1); }
-  #sidebar h3 { color: #667eea; margin-bottom: 15px; border-bottom: 2px solid #667eea; padding-bottom: 10px; }
-  .cloud-btns { display: flex; gap: 10px; margin-bottom: 15px; }
-  .cloud-btns button { flex: 1; padding: 10px; border: none; border-radius: 8px; background: #667eea; color: white; cursor: pointer; }
-  .cloud-btns button:hover { background: #5568d3; }
-  .progress-text { text-align: center; padding: 10px; background: #f0f0f0; border-radius: 8px; margin-bottom: 15px; color: #666; }
-  .variants-list { display: flex; flex-direction: column; gap: 8px; }
-  .variants-list button { display: flex; justify-content: space-between; padding: 12px; border: 2px solid #e0e0e0; background: white; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
-  .variants-list button:hover { border-color: #667eea; transform: translateX(4px); }
-  .variants-list button.current { background: #667eea; color: white; border-color: #667eea; }
-  .variants-list button.active { border-left: 4px solid #ff9800; }
-  .variants-list button.done { border-left: 4px solid #4caf50; }
+  #variantContent{margin-left:280px;flex:1;padding:30px;max-width:900px;padding-bottom:100px}
+  .variant-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:25px;padding:20px;background:white;border-radius:12px;box-shadow:0 4px 15px rgba(0,0,0,0.1)}
+  .variant-header h2{color:#667eea;font-size:28px}
+  .variant-header button{padding:10px 20px;border:none;border-radius:8px;background:#ff9800;color:white;cursor:pointer;font-size:14px;transition:all 0.2s}
+  .variant-header button:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(255,152,0,0.3)}
   
-  /* Content */
-  #variantContent { margin-left: 260px; flex: 1; padding: 30px; max-width: 800px; }
-  .variant-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; padding: 20px; background: white; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-  .variant-header h2 { color: #667eea; font-size: 28px; }
-  .variant-header button { padding: 10px 20px; border: none; border-radius: 8px; background: #ff9800; color: white; cursor: pointer; }
+  .questions{display:flex;flex-direction:column;gap:20px}
+  .q-card{background:white;padding:25px;border-radius:12px;box-shadow:0 4px 15px rgba(0,0,0,0.08);transition:all 0.3s}
+  .q-card:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,0.12)}
+  .q-card.right{background:linear-gradient(135deg,#e8f5e9 0%,#c8e6c9 100%)}
+  .q-card.wrong{background:linear-gradient(135deg,#ffebee 0%,#ffcdd2 100%)}
   
-  .questions { display: flex; flex-direction: column; gap: 20px; }
-  .q-card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
-  .q-card.right { background: #e8f5e9; }
-  .q-card.wrong { background: #ffebee; }
+  .q-top{display:flex;align-items:center;gap:12px;margin-bottom:15px}
+  .num{background:#667eea;color:white;padding:6px 14px;border-radius:20px;font-weight:bold;font-size:14px}
+  .type{color:#666;font-size:13px;background:#f0f0f0;padding:4px 12px;border-radius:15px}
+  .res{margin-left:auto;font-weight:bold;font-size:18px;padding:4px 12px;border-radius:15px}
+  .q-card.right .res{background:#4caf50;color:white}
+  .q-card.wrong .res{background:#f44336;color:white}
   
-  .q-top { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
-  .num { background: #667eea; color: white; padding: 5px 15px; border-radius: 20px; font-weight: bold; }
-  .type { color: #666; font-size: 14px; }
-  .res { margin-left: auto; font-weight: bold; font-size: 20px; }
-  .q-card.right .res { color: #4caf50; }
-  .q-card.wrong .res { color: #f44336; }
+  .q-txt{font-size:17px;line-height:1.7;margin-bottom:20px;font-weight:500}
   
-  .q-txt { font-size: 17px; line-height: 1.6; margin-bottom: 20px; }
+  .ans-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+  .ans-list label{display:flex;align-items:center;gap:12px;padding:16px;background:#f8f9fa;border:2px solid #e0e0e0;border-radius:12px;cursor:pointer;transition:all 0.2s}
+  .ans-list label:hover:not(.cor):not(.err){border-color:#667eea;background:#e3f2fd;transform:translateX(4px)}
+  .ans-list label.sel{border-color:#667eea;background:#e3f2fd;box-shadow:0 2px 8px rgba(102,126,234,0.2)}
+  .ans-list label.cor{border-color:#4caf50;background:#e8f5e9}
+  .ans-list label.err{border-color:#f44336;background:#ffebee}
+  .ans-list input{width:18px;height:18px;accent-color:#667eea}
+  .ans-list .mark{width:24px;text-align:center;font-weight:bold;font-size:16px}
+  .ans-list .cor .mark{color:#4caf50}
+  .ans-list .err .mark{color:#f44336}
+  .ans-list .txt{flex:1;font-size:15px}
   
-  .ans-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }
-  .ans-list label { display: flex; align-items: center; gap: 10px; padding: 15px; background: #f8f9fa; border: 2px solid #e0e0e0; border-radius: 10px; cursor: pointer; transition: all 0.2s; }
-  .ans-list label:hover:not(.cor):not(.err) { border-color: #667eea; background: #e3f2fd; }
-  .ans-list label.sel { border-color: #667eea; background: #e3f2fd; }
-  .ans-list label.cor { border-color: #4caf50; background: #e8f5e9; }
-  .ans-list label.err { border-color: #f44336; background: #ffebee; }
-  .ans-list input { width: 18px; height: 18px; }
-  .mark { width: 20px; text-align: center; font-weight: bold; }
-  .cor .mark { color: #4caf50; }
-  .err .mark { color: #f44336; }
+  .finish-box{text-align:center;padding:40px;background:white;border-radius:12px;margin-top:30px;box-shadow:0 4px 15px rgba(0,0,0,0.1);animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.02)}}
+  .finish-box p{font-size:18px;color:#4caf50;margin-bottom:20px;font-weight:600}
+  .finish-box button{padding:20px 50px;font-size:18px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border:none;border-radius:12px;cursor:pointer;transition:all 0.3s;box-shadow:0 8px 30px rgba(102,126,234,0.4)}
+  .finish-box button:hover{transform:translateY(-4px);box-shadow:0 12px 40px rgba(102,126,234,0.5)}
   
-  .finish-box { text-align: center; padding: 40px; background: white; border-radius: 12px; margin-top: 30px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-  .finish-box button { padding: 20px 50px; font-size: 18px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 12px; cursor: pointer; }
-  .finish-box button:hover { transform: scale(1.05); }
+  .res-card{text-align:center;padding:40px;background:white;border-radius:16px;margin-bottom:25px;box-shadow:0 8px 30px rgba(0,0,0,0.1)}
+  .score-circle{position:relative;width:150px;height:150px;margin:0 auto 20px}
+  .score-circle svg{transform:rotate(-90deg);width:100%;height:100%}
+  .score-circle .bg{fill:none;stroke:#e0e0e0;stroke-width:3}
+  .score-circle .progress{fill:none;stroke:url(#grad);stroke-width:3;stroke-linecap:round;transition:stroke-dasharray 1s ease}
+  .score-circle .val{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:36px;font-weight:bold;color:#667eea}
+  .res-card .det{margin-bottom:20px}
+  .res-card .big{font-size:48px;font-weight:bold;color:#333;margin-bottom:10px}
+  .res-card .big span{font-size:24px;color:#999;font-weight:400}
+  .res-card button{padding:12px 30px;border:none;border-radius:8px;background:#ff9800;color:white;cursor:pointer;font-size:16px;transition:all 0.2s}
+  .res-card button:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(255,152,0,0.3)}
   
-  /* Results */
-  .res-card { text-align: center; padding: 40px; background: white; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-  .score-big { font-size: 64px; font-weight: bold; color: #667eea; }
-  .score-det { font-size: 24px; color: #666; margin: 15px 0; }
-  .res-card button { padding: 12px 30px; border: none; border-radius: 8px; background: #ff9800; color: white; cursor: pointer; }
+  .res-list{display:flex;flex-direction:column;gap:15px}
+  .res-item{padding:20px;background:white;border-radius:12px;border-left:4px solid;animation:slideIn 0.4s ease}
+  @keyframes slideIn{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:translateX(0)}}
+  .res-item.ok{border-left-color:#4caf50;background:#e8f5e9}
+  .res-item.bad{border-left-color:#f44336;background:#ffebee}
+  .res-item .h{display:flex;align-items:center;gap:10px;margin-bottom:12px;font-weight:bold}
+  .res-item .h span{background:#f0f0f0;padding:5px 12px;border-radius:15px;font-size:14px}
+  .res-item.ok .h span{background:#4caf50;color:white}
+  .res-item.bad .h span{background:#f44336;color:white}
+  .res-item .q{font-weight:500;margin-bottom:10px;color:#333}
+  .res-item .a{font-size:14px;color:#666;margin-bottom:4px}
+  .res-item .c{font-size:14px;color:#4caf50;font-weight:500}
   
-  .res-list { display: flex; flex-direction: column; gap: 15px; }
-  .res-item { padding: 20px; background: white; border-radius: 12px; border-left: 4px solid; }
-  .res-item.ok { border-left-color: #4caf50; background: #e8f5e9; }
-  .res-item.bad { border-left-color: #f44336; background: #ffebee; }
-  .res-h { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-weight: bold; }
-  .res-h span { background: #f0f0f0; padding: 5px 12px; border-radius: 15px; }
-  
-  /* Notif */
-  .notif { position: fixed; top: 20px; right: 20px; padding: 15px 25px; border-radius: 10px; color: white; transform: translateX(400px); transition: transform 0.3s; z-index: 1001; }
+    .notif { position: fixed; top: 20px; right: 20px; padding: 15px 25px; border-radius: 10px; color: white; transform: translateX(400px); transition: transform 0.3s; z-index: 1001; }
   .notif.show { transform: translateX(0); }
   .notif.success { background: #4caf50; }
   .notif.error { background: #f44336; }
