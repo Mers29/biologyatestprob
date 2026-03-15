@@ -561,8 +561,9 @@
   </div>
 
   <!-- ====== Основное окно теста (скрываем по умолчанию) ====== -->
-  <main class="app" id="app" style="display:none" role="main">
+  <main class="app" id="app" style="display:none">
     <header class="header">
+<div id="variantContainer" class="variant-container"></div>
       <div id="topRow" style="display:flex; justify-content:space-between; align-items:center;">
         <div>
           <div id="progressText" aria-live="polite">Вопрос 1 из 1</div>
@@ -582,12 +583,11 @@
       <div id="answers" role="list"></div>
     </section>
 
-    <div class="controls" role="region" aria-label="Управление тестом">
-      <button id="prevBtn">Предыдущий</button>
-      <button id="submitBtn">Ответить</button>
-      <button id="nextBtn">Следующий вопрос</button>
-      <!-- exitErrorsBtn добавляется динамически внутри app.js -->
-    </div>
+  <div class="controls" style="display: none;">
+    <button id="prevBtn">Предыдущий</button>
+    <button id="submitBtn">Ответить</button>
+    <button id="nextBtn">Следующий вопрос</button>
+  </div>
 
     <footer class="footer">
       <button id="errorsBtn">Работа над ошибками</button>
@@ -640,11 +640,3 @@
   </script>
 </body>
 </html>
-
-
-
-
-
-
-
-
