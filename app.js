@@ -27,15 +27,15 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-firestore.js";
 
 /* ====== КОНФИГ FIREBASE ====== */
-const firebaseConfig = {
-  apiKey: "AIzaSyBtYSlpZ0JHmUDNYCbp5kynR_yifj5y0dY",
-  authDomain: "baseforbiotest.firebaseapp.com",
-  projectId: "baseforbiotest",
-  storageBucket: "baseforbiotest.firebasestorage.app",
-  messagingSenderId: "678186767483",
-  appId: "1:678186767483:web:ca06fa25c69fab8aa5fede",
-  measurementId: "G-Y2WZ1W3SBN"
-};
+  const firebaseConfig = {
+    apiKey: "AIzaSyDGpnrS3DQRq4iopuVCL86N6ss7zsVL8Kk",
+    authDomain: "biotestprob.firebaseapp.com",
+    projectId: "biotestprob",
+    storageBucket: "biotestprob.firebasestorage.app",
+    messagingSenderId: "177127143512",
+    appId: "1:177127143512:web:7fed6b4bb5db311d3b322d",
+    measurementId: "G-99FCZ1PQKQ"
+  };
 
 /* ====== КОЛЛЕКЦИИ FIREBASE ====== */
 const USERS_COLLECTION = "users";
