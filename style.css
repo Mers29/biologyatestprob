@@ -111,10 +111,6 @@ body.dark {
   align-items: center;
 }
 
-#resetWrapper {
-  margin-top: 8px;
-}
-
 #resetBtn {
   width: 50px;
   padding: 5px 10px;
@@ -259,6 +255,120 @@ button.secondary { background: #81c784; }
 #loadFromCloudBtn:disabled {
     background: #BBDEFB !important;
     cursor: not-allowed !important;
+}
+
+.variant-container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.question-block {
+  background: var(--card);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 30px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+.question-block h3 {
+  margin-top: 0;
+  color: var(--text);
+  font-size: 1.2rem;
+}
+
+.answers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.answer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: #f9f9f9;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.answer:hover {
+  background: #e0f2e0;
+}
+
+.answer input[type="radio"],
+.answer input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.answer span {
+  font-size: 16px;
+  color: var(--text);
+}
+
+/* Кнопки управления вариантом */
+.variant-actions {
+  display: flex;
+  gap: 15px;
+  margin-top: 30px;
+  justify-content: center;
+}
+
+.variant-actions button {
+  padding: 12px 24px;
+  font-size: 16px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+
+#finishVariantBtn {
+  background: #4CAF50;
+  color: white;
+}
+
+#resetVariantBtn {
+  background: #f44336;
+  color: white;
+}
+
+/* Боковая панель с вариантами */
+#variantPanel button {
+  width: 100%;
+  text-align: left;
+  padding: 10px;
+  margin: 4px 0;
+  border-radius: 5px;
+  background: #fff;
+  border: 1px solid #ccc;
+  cursor: pointer;
+}
+
+#variantPanel button.active {
+  background: #2196F3;
+  color: white;
+  border-color: #2196F3;
+}
+
+/* Адаптивность */
+@media (max-width: 600px) {
+  .variant-container {
+    padding: 10px;
+  }
+  .question-block {
+    padding: 15px;
+  }
+  .answer {
+    font-size: 14px;
+  }
 }
 
 /* ====== Прогресс ====== */
@@ -503,7 +613,6 @@ button.secondary { background: #81c784; }
 @media (max-width: 600px) {
   #questionPanelWrapper { width: 50px; top: 40px; height: calc(100vh - 50px); }
   #questionPanel button { width: 32px; height: 32px; font-size: 12px; }
-  #pageNav button { width: 32px; height: 32px; font-size: 12px; }
   #resetBtn { width: 45px; font-size: 11px; }
   .app { 
     margin-left: 12px;   /* уменьшил отступ чтобы контейнер был шире */
