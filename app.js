@@ -434,13 +434,15 @@ onAuthStateChanged(auth, async (user) => {
   }
   
   currentUser = user;
+  // Строгая проверка email админа
   isAdmin = user.email === ADMIN_EMAIL;
+  console.log('User:', user.email, 'Is Admin:', isAdmin); // Для отладки
   
   if (userEmailSpan) userEmailSpan.textContent = user.email;
   if (authOverlay) authOverlay.style.display = 'none';
   if (appDiv) appDiv.style.display = 'block';
   
-  // Проверяем доступ
+  // Проверяем доступ только для не-админов
   if (!isAdmin) {
     const userDoc = await getDoc(doc(db, USERS_COLLECTION, user.uid));
     if (!userDoc.exists() || !userDoc.data().allowed) {
@@ -450,7 +452,10 @@ onAuthStateChanged(auth, async (user) => {
     }
   }
   
-  setupAdminPanel();
+  // Создаем админ панель ТОЛЬКО если isAdmin === true
+  if (isAdmin) {
+    setupAdminPanel();
+  }
   createWhatsAppButton();
   
   await loadQuestionsFromGithub();
@@ -508,43 +513,60 @@ async function loadQuestionsFromGithub() {
 }
 
 // ===== VARIANTS =====
+// ===== ВАРИАНТЫ - ИСПРАВЛЕНО: всегда 20 вариантов =====
 function generateVariantList() {
-  const maxSingle = Math.floor(singleQuestions.length / SINGLE_COUNT);
-  const maxMulti = Math.floor(multipleQuestions.length / MULTIPLE_COUNT);
-  const maxVariants = Math.min(maxSingle, maxMulti, 20);
-  
+  // Убираем ограничение по количеству вопросов - всегда 20 вариантов
+  // Вопросы будут повторяться если не хватает уникальных
   VARIANTS_LIST = [];
-  for (let i = 1; i <= Math.max(1, maxVariants); i++) {
+  for (let i = 1; i <= 20; i++) {
     VARIANTS_LIST.push(`${i}-нұсқа`);
   }
 }
 
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
+// ===== ГЕНЕРАЦИЯ ВАРИАНТА - ИСПРАВЛЕНО: циклическое использование вопросов =====
 function generateVariant(vid) {
-  const used = new Set();
-  Object.values(variantsState).forEach(v => v.questions?.forEach(q => used.add(q.originalId)));
+  // Используем вопросы циклически если не хватает уникальных
+  const usedOffset = (parseInt(vid) - 1) * (SINGLE_COUNT + MULTIPLE_COUNT);
   
-  let availSingle = singleQuestions.filter(q => !used.has(q.id));
-  let availMulti = multipleQuestions.filter(q => !used.has(q.id));
+  let availSingle = [...singleQuestions];
+  let availMulti = [...multipleQuestions];
   
-  if (availSingle.length < SINGLE_COUNT) availSingle = [...singleQuestions];
-  if (availMulti.length < MULTIPLE_COUNT) availMulti = [...multipleQuestions];
+  // Перемешиваем с seed на основе номера варианта для консистентности
+  const seedRandom = (seed) => {
+    let x = Math.sin(seed++) * 10000;
+    return x - Math.floor(x);
+  };
   
-  const selSingle = shuffle(availSingle).slice(0, SINGLE_COUNT);
-  const selMulti = shuffle(availMulti).slice(0, MULTIPLE_COUNT);
+  const shuffleWithSeed = (arr, seed) => {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(seedRandom(seed + i) * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  };
+  
+  // Перемешиваем на основе номера варианта
+  const seed = parseInt(vid) * 12345;
+  availSingle = shuffleWithSeed(availSingle, seed);
+  availMulti = shuffleWithSeed(availMulti, seed + 999);
+  
+  // Берем нужное количество (с повторением если мало вопросов)
+  const getQuestions = (pool, count) => {
+    const result = [];
+    while (result.length < count) {
+      result.push(...pool);
+    }
+    return result.slice(0, count);
+  };
+  
+  const selSingle = getQuestions(availSingle, SINGLE_COUNT);
+  const selMulti = getQuestions(availMulti, MULTIPLE_COUNT);
   
   const process = (q, idx) => {
     const order = shuffle(q.answers.map((_, i) => i));
     return {
-      id: `${vid}_${q.id}`,
+      id: `${vid}_${q.id}_${idx}`,
       originalId: q.id,
       text: q.text,
       answers: order.map(i => q.answers[i]),
@@ -717,10 +739,20 @@ function renderContent() {
         </div>
       `).join('')}
     </div>
-    ${allAnswered ? `
-      <div class="finish-box">
-        <p>Барлық сұрақтарға жауап бердіңіз!</p>
-        <button onclick="finishVariant()">🏁 Тестті аяқтау</button>
+    
+    <!-- ИСПРАВЛЕНО: Кнопка завершения теперь всегда в DOM, но скрыта/показана через CSS -->
+    <div class="finish-box" style="${allAnswered ? 'display:block;' : 'display:none;'}">
+      <p>Барлық сұрақтарға жауап бердіңіз!</p>
+      <button onclick="finishVariant()">🏁 Тестті аяқтау</button>
+    </div>
+    
+    <!-- Прогресс для незавершенных -->
+    ${!allAnswered ? `
+      <div class="progress-box" style="text-align:center; padding:20px; background:white; border-radius:12px; margin-top:20px;">
+        <p>Жауап берілді: <strong>${answered}/${st.questions.length}</strong></p>
+        <div style="width:100%; height:10px; background:#e0e0e0; border-radius:5px; margin-top:10px; overflow:hidden;">
+          <div style="width:${(answered/st.questions.length)*100}%; height:100%; background:#667eea; transition:width 0.3s;"></div>
+        </div>
       </div>
     ` : ''}
   `;
@@ -749,10 +781,12 @@ function updateCard(qi) {
     if (inp) inp.checked = q.userAnswers.includes(i);
   });
   
-  const all = st.questions.every(q => q.userAnswers.length > 0);
-  if (all && !document.querySelector('.finish-box')) {
-    renderContent();
-  }
+  // Обновляем прогресс и кнопку завершения
+  const answered = st.questions.filter(q => q.userAnswers.length > 0).length;
+  const allAnswered = answered === st.questions.length;
+  
+  // Обновляем или создаем заново прогресс/кнопку
+  renderContent();
 }
 
 window.finishVariant = function() {
