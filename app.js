@@ -1,24 +1,3 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
-import {
-  getFirestore, doc, setDoc, getDoc, getDocs, collection, serverTimestamp, updateDoc,
-  arrayUnion, writeBatch
-} from "https://www.gstatic.com/firebasejs/12.8.0/firebase-firestore.js";
-import {
-  getAuth, onAuthStateChanged, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  updatePassword, EmailAuthProvider, reauthenticateWithCredential
-} from "https://www.gstatic.com/firebasejs/12.8.0/firebase-auth.js";
-
-/* ====== КОНФИГ FIREBASE ====== */ 
-const firebaseConfig = {
-  apiKey: "AIzaSyDGpnrS3DQRq4iopuVCL86N6ss7zsVL8Kk",
-  authDomain: "biotestprob.firebaseapp.com",
-  projectId: "biotestprob",
-  storageBucket: "biotestprob.firebasestorage.app",
-  messagingSenderId: "177127143512",
-  appId: "1:177127143512:web:7fed6b4bb5db311d3b322d",
-  measurementId: "G-99FCZ1PQKQ"
-};;
-
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
@@ -463,48 +442,15 @@ onAuthStateChanged(auth, async (user) => {
 
 // ===== LOAD QUESTIONS =====
 async function loadQuestionsFromFirestore() {
-  console.log("=== ДИАГНОСТИКА ЗАГРУЗКИ ВОПРОСОВ ===");
-  console.log("1. currentUser:", currentUser ? currentUser.email : "null");
-  console.log("2. auth.currentUser:", auth.currentUser ? auth.currentUser.email : "null");
-  console.log("3. QUESTIONS_COLLECTION:", QUESTIONS_COLLECTION);
-  console.log("4. UID:", currentUser?.uid);
-  
-  // Проверяем авторизацию
-  if (!auth.currentUser) {
-    console.error("❌ ОШИБКА: auth.currentUser is null!");
-    showNotification('Ошибка: пользователь не авторизован', 'error');
-    return;
-  }
-  
-  // Проверяем токен
   try {
-    const token = await auth.currentUser.getIdToken(true);
-    console.log("5. Токен получен:", token.substring(0, 20) + "...");
-  } catch (tokenErr) {
-    console.error("❌ ОШИБКА получения токена:", tokenErr);
-  }
-  
-  try {
-    console.log("6. Начинаем запрос к Firestore...");
-    const questionsRef = collection(db, QUESTIONS_COLLECTION);
-    console.log("7. Ссылка на коллекцию создана:", questionsRef.path);
-    
-    const snap = await getDocs(questionsRef);
-    console.log("8. Документов получено:", snap.size);
+    const snap = await getDocs(collection(db, QUESTIONS_COLLECTION));
     
     allQuestions = [];
     singleQuestions = [];
     multipleQuestions = [];
     
-    if (snap.size === 0) {
-      console.warn("⚠️ Коллекция существует, но пустая!");
-      showNotification('Внимание: база вопросов пуста', 'warning');
-    }
-    
     snap.forEach(doc => {
       const q = doc.data();
-      console.log("9. Обрабатываем документ:", doc.id, q.text?.substring(0, 30));
-      
       let correct = q.correct || [0];
       if (!Array.isArray(correct)) correct = [correct];
       correct = correct.map(c => parseInt(c)).filter(c => !isNaN(c));
@@ -522,25 +468,10 @@ async function loadQuestionsFromFirestore() {
       else singleQuestions.push(question);
     });
     
-    console.log(`✅ Загружено: ${allQuestions.length} вопросов`);
-    console.log("   - Одиночных:", singleQuestions.length);
-    console.log("   - Множественных:", multipleQuestions.length);
-    
-    // Если вопросы загружены, генерируем варианты
-    if (allQuestions.length > 0) {
-      generateVariantList();
-      loadLocal();
-      renderSidebar();
-      if (!currentVariant && VARIANTS_LIST.length > 0) {
-        selectVariant(VARIANTS_LIST[0]);
-      }
-    }
-    
+    console.log(`Загружено: ${allQuestions.length} вопросов`);
   } catch (e) {
-    console.error('❌ ОШИБКА загрузки вопросов:', e);
-    console.error('Код ошибки:', e.code);
-    console.error('Сообщение:', e.message);
-    showNotification('Ошибка загрузки вопросов: ' + e.message, 'error');
+    console.error('Ошибка загрузки вопросов:', e);
+    alert('Ошибка загрузки вопросов!');
   }
 }
 
