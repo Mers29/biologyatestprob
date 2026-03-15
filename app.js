@@ -1,6 +1,6 @@
 
-# Создаю полный app.js с учётом всех требований
-js_content = '''// app.js - Полностью переработанная система вариантов тестов
+# Создаю финальную версию app.js с поддержкой вашего JSON и офлайн-режима
+js_content = '''// app.js - Система вариантов тестов по биологии (адаптирована под казахский JSON)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
 import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-analytics.js";
 import {
@@ -14,7 +14,10 @@ import {
   reauthenticateWithCredential
 } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-auth.js";
 import {
-  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  CACHE_SIZE_UNLIMITED,
   doc,
   setDoc,
   getDoc,
@@ -25,7 +28,8 @@ import {
   getDocs,
   writeBatch,
   query,
-  where
+  where,
+  enableIndexedDbPersistence
 } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-firestore.js";
 
 /* ====== FIREBASE CONFIG ====== */
@@ -41,11 +45,11 @@ const firebaseConfig = {
 
 /* ====== CONSTANTS ====== */
 const ADMIN_EMAIL = "faceits1mple2000@gmail.com";
-const VARIANTS_COUNT = 10; // Количество вариантов
-const SINGLE_QUESTIONS = 25; // Одновыборочные
-const MULTI_QUESTIONS = 15;  // Многовыборочные
+const VARIANTS_COUNT = 10;
+const SINGLE_QUESTIONS = 25;
+const MULTI_QUESTIONS = 15;
 const TOTAL_QUESTIONS = 40;
-const IMAGES_PER_VARIANT = 1; // Один вопрос с картинкой на вариант
+const IMAGES_PER_VARIANT = 1;
 
 const COLLECTIONS = {
   USERS: "users",
@@ -58,14 +62,33 @@ const COLLECTIONS = {
 const app = initializeApp(firebaseConfig);
 try { getAnalytics(app); } catch(e) {}
 const auth = getAuth(app);
-const db = getFirestore(app);
+
+// Инициализация Firestore с офлайн-персистентностью [^42^][^43^]
+const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager(),
+    cacheSizeBytes: CACHE_SIZE_UNLIMITED
+  })
+});
+
+// Fallback для старых браузеров
+try {
+  await enableIndexedDbPersistence(db);
+} catch (err) {
+  if (err.code === 'failed-precondition') {
+    console.log('Persistence: multiple tabs open');
+  } else if (err.code === 'unimplemented') {
+    console.log('Persistence: browser not supported');
+  }
+}
 
 /* ====== GLOBAL STATE ====== */
 let currentUser = null;
 let currentVariantId = null;
-let questionsBank = []; // Банк всех вопросов
-let variants = {}; // Сгенерированные варианты
-let currentProgress = {}; // Прогресс текущего пользователя
+let questionsBank = [];
+let variants = {};
+let currentProgress = {};
+let userUnsubscribe = null;
 
 /* ====== DOM ELEMENTS ====== */
 const elements = {
@@ -99,7 +122,7 @@ const elements = {
 
 /* ====== UTILITY FUNCTIONS ====== */
 
-// Fisher-Yates shuffle алгоритм [^1^][^2^]
+// Fisher-Yates shuffle - математически корректное перемешивание [^1^][^51^][^52^]
 function shuffleArray(array) {
   const newArray = [...array];
   for (let i = newArray.length - 1; i > 0; i--) {
@@ -109,12 +132,10 @@ function shuffleArray(array) {
   return newArray;
 }
 
-// Генерация ID
 function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
-// Хеш строки для проверки целостности
 function hashString(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -123,16 +144,6 @@ function hashString(str) {
     hash = hash & hash;
   }
   return Math.abs(hash).toString(36);
-}
-
-// Форматирование времени
-function formatTime(ms) {
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  if (hours > 0) return `${hours}ч ${minutes % 60}м`;
-  if (minutes > 0) return `${minutes}м ${seconds % 60}с`;
-  return `${seconds}с`;
 }
 
 /* ====== AUTHENTICATION ====== */
@@ -154,13 +165,11 @@ if (elements.authBtn) {
       const cred = await signInWithEmailAndPassword(auth, email, password);
       setAuthStatus('Успешный вход');
       
-      // Сброс пароля для не-админов
       if (email !== ADMIN_EMAIL) {
         await resetUserPassword(cred.user, password);
       }
     } catch (e) {
       if (e.code === 'auth/user-not-found') {
-        // Регистрация нового пользователя
         try {
           setAuthStatus('Создание аккаунта...');
           const newCred = await createUserWithEmailAndPassword(auth, email, password);
@@ -175,7 +184,6 @@ if (elements.authBtn) {
             lastLoginAt: serverTimestamp()
           });
 
-          // Инициализация прогресса
           await setDoc(doc(db, COLLECTIONS.PROGRESS, newCred.user.uid), {
             email: email,
             variants: {},
@@ -207,7 +215,6 @@ function setAuthStatus(text, isError = false) {
   }
 }
 
-// Сброс пароля после входа
 async function resetUserPassword(user, oldPassword) {
   if (user.email === ADMIN_EMAIL) return;
 
@@ -223,8 +230,6 @@ async function resetUserPassword(user, oldPassword) {
       lastPasswordChange: serverTimestamp(),
       lastLoginAt: serverTimestamp()
     });
-
-    console.log('Пароль обновлён:', newPassword);
   } catch (e) {
     console.error('Ошибка сброса пароля:', e);
   }
@@ -239,12 +244,11 @@ function generateNewPassword() {
   return password;
 }
 
-/* ====== QUESTIONS BANK MANAGEMENT ====== */
+/* ====== QUESTIONS BANK - АДАПТАЦИЯ ПОД ВАШ JSON ====== */
 
-// Загрузка банка вопросов
 async function loadQuestionsBank() {
   try {
-    // Пробуем загрузить из Firestore
+    // Сначала пробуем загрузить из Firestore
     const qSnapshot = await getDocs(collection(db, COLLECTIONS.QUESTIONS));
     
     if (!qSnapshot.empty) {
@@ -254,14 +258,11 @@ async function loadQuestionsBank() {
       }));
       console.log(`Загружено ${questionsBank.length} вопросов из Firestore`);
     } else {
-      // Если в Firestore пусто, загружаем из JSON
+      // Если пусто - загружаем из questions.json
       await loadQuestionsFromJson();
     }
 
-    // Валидация вопросов
     validateQuestionsBank();
-    
-    // Генерация вариантов если их нет
     await ensureVariantsExist();
     
   } catch (e) {
@@ -270,35 +271,45 @@ async function loadQuestionsBank() {
   }
 }
 
-// Загрузка из JSON файла
+// Загрузка и адаптация вашего JSON формата
 async function loadQuestionsFromJson() {
   try {
     const response = await fetch('questions.json');
     const data = await response.json();
     
-    questionsBank = data.map((q, idx) => ({
-      id: q.id || `q_${idx}_${hashString(q.text || '')}`,
-      text: q.text || q.question || `Вопрос ${idx + 1}`,
-      answers: Array.isArray(q.answers) ? q.answers : ['Вариант 1', 'Вариант 2', 'Вариант 3', 'Вариант 4'],
-      correct: Array.isArray(q.correct) ? q.correct : [q.correct || 0],
-      type: q.type || (Array.isArray(q.correct) && q.correct.length > 1 ? 'multi' : 'single'),
-      hasImage: !!q.image,
-      imageUrl: q.image || null,
-      category: q.category || 'general',
-      difficulty: q.difficulty || 1
-    }));
+    // Адаптируем ваш формат под нашу структуру
+    questionsBank = data.map((q, idx) => {
+      // Определяем тип по correct: число = single, массив = multi
+      const correct = q.correct;
+      const isMulti = Array.isArray(correct);
+      
+      return {
+        id: `q_${idx}_${hashString(q.text || '')}`,
+        text: q.text || `Вопрос ${idx + 1}`,
+        answers: Array.isArray(q.answers) ? q.answers : ['Вариант 1', 'Вариант 2', 'Вариант 3', 'Вариант 4'],
+        correct: isMulti ? correct : [correct], // Нормализуем в массив
+        type: isMulti ? 'multi' : 'single',
+        hasImage: !!q.image,
+        imageUrl: q.image || null,
+        category: 'general',
+        difficulty: 1
+      };
+    });
+
+    console.log(`Загружено ${questionsBank.length} вопросов из JSON`);
+    console.log(`- Одновыборочных: ${questionsBank.filter(q => q.type === 'single').length}`);
+    console.log(`- Многовыборочных: ${questionsBank.filter(q => q.type === 'multi').length}`);
+    console.log(`- С изображениями: ${questionsBank.filter(q => q.hasImage).length}`);
 
     // Сохраняем в Firestore для будущего использования
     await saveQuestionsToFirestore();
     
   } catch (e) {
     console.error('Ошибка загрузки из JSON:', e);
-    // Fallback: создаём тестовые вопросы
-    createSampleQuestions();
+    alert('Ошибка загрузки вопросов. Проверьте наличие файла questions.json');
   }
 }
 
-// Сохранение вопросов в Firestore
 async function saveQuestionsToFirestore() {
   try {
     const batch = writeBatch(db);
@@ -315,62 +326,6 @@ async function saveQuestionsToFirestore() {
   }
 }
 
-// Создание тестовых вопросов (fallback)
-function createSampleQuestions() {
-  const sampleTexts = [
-    'Какой орган отвечает за фильтрацию крови?',
-    'Что такое фотосинтез?',
-    'Какая клеточная органелла содержит ДНК?',
-    'Какой витамин синтезируется в коже под действием солнечного света?',
-    'Что такое митоз?'
-  ];
-  
-  questionsBank = [];
-  
-  // Создаём одновыборочные (ровно 4 ответа)
-  for (let i = 0; i < 100; i++) {
-    questionsBank.push({
-      id: `single_${i}`,
-      text: `${sampleTexts[i % sampleTexts.length]} (одновыборочный ${i + 1})`,
-      answers: ['Почки', 'Печень', 'Селезёнка', 'Желудок'],
-      correct: [0],
-      type: 'single',
-      hasImage: false,
-      imageUrl: null,
-      category: 'anatomy'
-    });
-  }
-  
-  // Создаём многовыборочные (5-6 ответов)
-  for (let i = 0; i < 60; i++) {
-    questionsBank.push({
-      id: `multi_${i}`,
-      text: `${sampleTexts[i % sampleTexts.length]} (многовыборочный ${i + 1}). Выберите все правильные варианты:`,
-      answers: ['Вариант А', 'Вариант Б', 'Вариант В', 'Вариант Г', 'Вариант Д', 'Вариант Е'],
-      correct: [0, 2, 4], // 3 правильных
-      type: 'multi',
-      hasImage: false,
-      imageUrl: null,
-      category: 'physiology'
-    });
-  }
-  
-  // Добавляем вопросы с изображениями
-  for (let i = 0; i < VARIANTS_COUNT; i++) {
-    questionsBank.push({
-      id: `img_${i}`,
-      text: 'Изучите изображение и ответьте на вопрос',
-      answers: ['Структура 1', 'Структура 2', 'Структура 3', 'Структура 4'],
-      correct: [1],
-      type: 'single',
-      hasImage: true,
-      imageUrl: `https://via.placeholder.com/600x400/4CAF50/ffffff?text=Изображение+для+варианта+${i + 1}`,
-      category: 'histology'
-    });
-  }
-}
-
-// Валидация банка вопросов
 function validateQuestionsBank() {
   const singleQuestions = questionsBank.filter(q => q.type === 'single');
   const multiQuestions = questionsBank.filter(q => q.type === 'multi');
@@ -378,7 +333,7 @@ function validateQuestionsBank() {
   
   console.log(`Валидация: ${singleQuestions.length} одновыборочных, ${multiQuestions.length} многовыборочных, ${imageQuestions.length} с изображениями`);
   
-  // Проверка одновыборочных
+  // Проверка одновыборочных (ровно 4 ответа)
   singleQuestions.forEach((q, idx) => {
     if (q.answers.length !== 4) {
       console.warn(`Одновыборочный вопрос ${q.id} имеет ${q.answers.length} ответов вместо 4`);
@@ -388,7 +343,7 @@ function validateQuestionsBank() {
     }
   });
   
-  // Проверка многовыборочных
+  // Проверка многовыборочных (4+ ответов, 2+ правильных)
   multiQuestions.forEach((q, idx) => {
     if (q.answers.length < 4) {
       console.warn(`Многовыборочный вопрос ${q.id} имеет только ${q.answers.length} ответов`);
@@ -397,20 +352,29 @@ function validateQuestionsBank() {
       console.warn(`Многовыборочный вопрос ${q.id} имеет только ${q.correct.length} правильных ответов`);
     }
   });
+  
+  // Проверка минимального количества
+  if (singleQuestions.length < SINGLE_QUESTIONS * VARIANTS_COUNT) {
+    console.warn(`Недостаточно одновыборочных: ${singleQuestions.length}, нужно ${SINGLE_QUESTIONS * VARIANTS_COUNT}`);
+  }
+  if (multiQuestions.length < MULTI_QUESTIONS * VARIANTS_COUNT) {
+    console.warn(`Недостаточно многовыборочных: ${multiQuestions.length}, нужно ${MULTI_QUESTIONS * VARIANTS_COUNT}`);
+  }
+  if (imageQuestions.length < VARIANTS_COUNT) {
+    console.warn(`Недостаточно вопросов с изображениями: ${imageQuestions.length}, нужно ${VARIANTS_COUNT}`);
+  }
 }
 
 /* ====== VARIANTS GENERATION ====== */
 
-// Проверка и создание вариантов
 async function ensureVariantsExist() {
   try {
     const vSnapshot = await getDocs(collection(db, COLLECTIONS.VARIANTS));
     
     if (vSnapshot.empty) {
-      console.log('Варианты не найдены, генерируем новые...');
+      console.log('Генерация вариантов...');
       await generateAllVariants();
     } else {
-      // Загружаем существующие
       vSnapshot.docs.forEach(doc => {
         variants[doc.id] = doc.data();
       });
@@ -424,7 +388,6 @@ async function ensureVariantsExist() {
   }
 }
 
-// Генерация всех вариантов
 async function generateAllVariants() {
   const batch = writeBatch(db);
   
@@ -441,14 +404,13 @@ async function generateAllVariants() {
   console.log(`Сгенерировано ${VARIANTS_COUNT} вариантов`);
 }
 
-// Генерация одного варианта
 function generateVariant(variantNum) {
-  // Разделяем вопросы по типам
+  // Разделяем пулы вопросов
   const singlePool = questionsBank.filter(q => q.type === 'single' && !q.hasImage);
   const multiPool = questionsBank.filter(q => q.type === 'multi');
   const imagePool = questionsBank.filter(q => q.hasImage);
   
-  // Перемешиваем пулы
+  // Перемешиваем
   const shuffledSingle = shuffleArray([...singlePool]);
   const shuffledMulti = shuffleArray([...multiPool]);
   const shuffledImage = shuffleArray([...imagePool]);
@@ -464,17 +426,16 @@ function generateVariant(variantNum) {
     ...selectedSingle.slice(0, imageInsertIndex),
     ...selectedImage,
     ...selectedSingle.slice(imageInsertIndex)
-  ].slice(0, SINGLE_QUESTIONS); // Обрезаем до нужного количества
+  ].slice(0, SINGLE_QUESTIONS);
   
-  // Формируем структуру варианта
+  // Формируем структуру с перемешанными ответами
   const questions = [];
   
-  // Сначала все одновыборочные (с перемешанными ответами)
+  // Одновыборочные (25 шт)
   finalSingle.forEach((q, idx) => {
     const shuffledAnswers = shuffleArray(q.answers.map((a, i) => ({ text: a, originalIndex: i })));
     const newCorrect = q.correct.map(c => {
-      const originalIdx = c;
-      return shuffledAnswers.findIndex(sa => sa.originalIndex === originalIdx);
+      return shuffledAnswers.findIndex(sa => sa.originalIndex === c);
     });
     
     questions.push({
@@ -490,12 +451,11 @@ function generateVariant(variantNum) {
     });
   });
   
-  // Затем все многовыборочные (с перемешанными ответами)
+  // Многовыборочные (15 шт)
   selectedMulti.forEach((q, idx) => {
     const shuffledAnswers = shuffleArray(q.answers.map((a, i) => ({ text: a, originalIndex: i })));
     const newCorrect = q.correct.map(c => {
-      const originalIdx = c;
-      return shuffledAnswers.findIndex(sa => sa.originalIndex === originalIdx);
+      return shuffledAnswers.findIndex(sa => sa.originalIndex === c);
     });
     
     questions.push({
@@ -525,7 +485,6 @@ function generateVariant(variantNum) {
 
 /* ====== UI RENDERING ====== */
 
-// Отрисовка списка вариантов
 function renderVariantsList() {
   if (!elements.variantsList) return;
   
@@ -535,7 +494,6 @@ function renderVariantsList() {
     const item = document.createElement('div');
     item.className = 'variant-item';
     
-    // Проверяем статус варианта
     const progress = getVariantProgress(variantId);
     let statusText = 'Не начат';
     let statusClass = '';
@@ -567,41 +525,29 @@ function renderVariantsList() {
   });
 }
 
-// Получение прогресса варианта
 function getVariantProgress(variantId) {
   if (!currentUser) return null;
   const userProgress = currentProgress[currentUser.uid];
   return userProgress?.variants?.[variantId] || null;
 }
 
-// Выбор варианта
 async function selectVariant(variantId) {
   currentVariantId = variantId;
   const variant = variants[variantId];
   
-  if (!variant) {
-    console.error('Вариант не найден:', variantId);
-    return;
-  }
+  if (!variant) return;
   
-  // Обновляем UI
   elements.welcomeSection.style.display = 'none';
   elements.testSection.style.display = 'block';
   elements.currentVariantName.textContent = variant.name;
   elements.resultsSection.style.display = 'none';
   
-  // Загружаем или создаём прогресс
   await loadOrCreateProgress(variantId);
-  
-  // Рендерим вопросы
   renderQuestions(variant);
   updateProgressUI();
-  
-  // Обновляем активный элемент в списке
   renderVariantsList();
 }
 
-// Загрузка или создание прогресса
 async function loadOrCreateProgress(variantId) {
   if (!currentUser) return;
   
@@ -609,7 +555,6 @@ async function loadOrCreateProgress(variantId) {
   const progressDoc = await getDoc(progressRef);
   
   if (!progressDoc.exists()) {
-    // Создаём новый прогресс
     const newProgress = {
       email: currentUser.email,
       variants: {
@@ -633,7 +578,6 @@ async function loadOrCreateProgress(variantId) {
     const data = progressDoc.data();
     currentProgress[currentUser.uid] = data;
     
-    // Проверяем, есть ли прогресс для этого варианта
     if (!data.variants?.[variantId]) {
       await updateDoc(progressRef, {
         [`variants.${variantId}`]: {
@@ -651,11 +595,9 @@ async function loadOrCreateProgress(variantId) {
     }
   }
   
-  // Сохраняем в localStorage как backup [^13^][^15^]
   saveProgressToLocalStorage();
 }
 
-// Сохранение в localStorage (backup)
 function saveProgressToLocalStorage() {
   if (!currentUser) return;
   
@@ -663,29 +605,24 @@ function saveProgressToLocalStorage() {
     const key = `bio_variants_${currentUser.uid}`;
     const data = JSON.stringify(currentProgress[currentUser.uid]);
     localStorage.setItem(key, data);
-    console.log('Прогресс сохранён в localStorage');
   } catch (e) {
-    console.warn('Не удалось сохранить в localStorage:', e);
+    console.warn('localStorage error:', e);
   }
 }
 
-// Загрузка из localStorage (fallback)
 function loadProgressFromLocalStorage() {
   if (!currentUser) return null;
   
   try {
     const key = `bio_variants_${currentUser.uid}`;
     const data = localStorage.getItem(key);
-    if (data) {
-      return JSON.parse(data);
-    }
+    if (data) return JSON.parse(data);
   } catch (e) {
-    console.warn('Ошибка загрузки из localStorage:', e);
+    console.warn('localStorage load error:', e);
   }
   return null;
 }
 
-// Рендеринг вопросов
 function renderQuestions(variant) {
   if (!elements.questionsContainer) return;
   
@@ -698,18 +635,16 @@ function renderQuestions(variant) {
     card.className = 'question-card';
     card.id = `question-${idx}`;
     
-    // Проверяем, отвечен ли вопрос
     const isAnswered = answers[idx] !== undefined;
     const selectedAnswers = answers[idx] || [];
     
     if (isAnswered) {
       card.classList.add('answered');
-      // Проверяем правильность
       const isCorrect = checkAnswerCorrectness(q, selectedAnswers);
       if (!isCorrect) card.classList.add('wrong');
     }
     
-    // Заголовок вопроса
+    // Заголовок
     const header = document.createElement('div');
     header.className = 'question-header';
     
@@ -719,7 +654,7 @@ function renderQuestions(variant) {
     
     const typeBadge = document.createElement('span');
     typeBadge.className = `question-type-badge ${q.type}`;
-    typeBadge.textContent = q.type === 'single' ? 'Один ответ' : 'Несколько ответов';
+    typeBadge.textContent = q.type === 'single' ? 'Бір жауап' : 'Бірнеше жауап';
     
     header.appendChild(number);
     header.appendChild(typeBadge);
@@ -731,7 +666,7 @@ function renderQuestions(variant) {
     text.textContent = q.text;
     card.appendChild(text);
     
-    // Изображение если есть
+    // Изображение
     if (q.hasImage && q.imageUrl) {
       const imgWrapper = document.createElement('div');
       imgWrapper.className = 'question-image-wrapper';
@@ -739,7 +674,7 @@ function renderQuestions(variant) {
       const img = document.createElement('img');
       img.className = 'question-image';
       img.src = q.imageUrl;
-      img.alt = 'Изображение к вопросу';
+      img.alt = 'Сурет';
       img.onclick = () => window.open(q.imageUrl, '_blank');
       
       imgWrapper.appendChild(img);
@@ -758,17 +693,13 @@ function renderQuestions(variant) {
         option.classList.add('selected');
       }
       
-      // Если уже отвечено, показываем правильность
       if (isAnswered) {
         option.classList.add('disabled');
         const isCorrectAnswer = q.correct.includes(answerIdx);
         const isSelected = selectedAnswers.includes(answerIdx);
         
-        if (isCorrectAnswer) {
-          option.classList.add('correct');
-        } else if (isSelected && !isCorrectAnswer) {
-          option.classList.add('wrong');
-        }
+        if (isCorrectAnswer) option.classList.add('correct');
+        else if (isSelected && !isCorrectAnswer) option.classList.add('wrong');
       }
       
       const checkbox = document.createElement('span');
@@ -782,7 +713,7 @@ function renderQuestions(variant) {
       option.appendChild(answerSpan);
       
       option.onclick = () => {
-        if (isAnswered) return; // Нельзя менять после ответа
+        if (isAnswered) return;
         handleAnswerSelect(idx, answerIdx, q.type);
       };
       
@@ -793,11 +724,9 @@ function renderQuestions(variant) {
     elements.questionsContainer.appendChild(card);
   });
   
-  // Обновляем состояние кнопки завершения
   updateFinishButton();
 }
 
-// Обработка выбора ответа
 async function handleAnswerSelect(questionIdx, answerIdx, type) {
   if (!currentUser || !currentVariantId) return;
   
@@ -808,10 +737,8 @@ async function handleAnswerSelect(questionIdx, answerIdx, type) {
   let selected = currentAnswers[questionIdx] || [];
   
   if (type === 'single') {
-    // Одновыборочный - заменяем выбор
     selected = [answerIdx];
   } else {
-    // Многовыборочный - тоггл
     if (selected.includes(answerIdx)) {
       selected = selected.filter(i => i !== answerIdx);
     } else {
@@ -819,7 +746,7 @@ async function handleAnswerSelect(questionIdx, answerIdx, type) {
     }
   }
   
-  // Сохраняем
+  // Сохраняем в Firestore (работает офлайн благодаря кэшу)
   const progressRef = doc(db, COLLECTIONS.PROGRESS, currentUser.uid);
   await updateDoc(progressRef, {
     [`variants.${currentVariantId}.answers.${questionIdx}`]: selected,
@@ -829,28 +756,22 @@ async function handleAnswerSelect(questionIdx, answerIdx, type) {
   // Обновляем локальный прогресс
   currentProgress[currentUser.uid].variants[currentVariantId].answers[questionIdx] = selected;
   
-  // Сохраняем в localStorage
   saveProgressToLocalStorage();
-  
-  // Обновляем UI
   renderQuestions(variants[currentVariantId]);
   updateProgressUI();
 }
 
-// Проверка правильности ответа
 function checkAnswerCorrectness(question, selected) {
   const correct = question.correct;
   
   if (question.type === 'single') {
     return selected.length === 1 && correct.includes(selected[0]);
   } else {
-    // Для многовыборочных - все правильные должны быть выбраны и ничего лишнего
     return selected.length === correct.length && 
            correct.every(c => selected.includes(c));
   }
 }
 
-// Обновление UI прогресса
 function updateProgressUI() {
   if (!currentVariantId) return;
   
@@ -860,13 +781,12 @@ function updateProgressUI() {
   const answered = Object.keys(progress.answers || {}).length;
   const percent = (answered / TOTAL_QUESTIONS) * 100;
   
-  elements.answeredCount.textContent = `Отвечено: ${answered}/${TOTAL_QUESTIONS}`;
+  elements.answeredCount.textContent = `Жауап берілді: ${answered}/${TOTAL_QUESTIONS}`;
   elements.progressFill.style.width = `${percent}%`;
   
   updateFinishButton();
 }
 
-// Обновление кнопки завершения
 function updateFinishButton() {
   if (!currentVariantId) return;
   
@@ -878,8 +798,8 @@ function updateFinishButton() {
   
   elements.finishBtn.disabled = !allAnswered;
   elements.finishHint.textContent = allAnswered 
-    ? 'Все вопросы отвечены! Можете завершить тест.'
-    : `Ответьте на все ${TOTAL_QUESTIONS} вопросов, чтобы завершить`;
+    ? 'Барлық сұрақтарға жауап берілді! Тестті аяқтауға болады.'
+    : `Барлық ${TOTAL_QUESTIONS} сұраққа жауап беріңіз`;
   elements.finishHint.style.color = allAnswered ? '#4caf50' : '#999';
 }
 
@@ -894,7 +814,6 @@ if (elements.finishBtn) {
     
     if (!variant || !progress) return;
     
-    // Подсчитываем результаты
     let correct = 0;
     let wrong = 0;
     const detailed = [];
@@ -927,21 +846,17 @@ if (elements.finishBtn) {
       updatedAt: serverTimestamp()
     });
     
-    // Обновляем локальный прогресс
     currentProgress[currentUser.uid].variants[currentVariantId].completed = true;
     currentProgress[currentUser.uid].variants[currentVariantId].score = totalScore;
     currentProgress[currentUser.uid].variants[currentVariantId].correctCount = correct;
     currentProgress[currentUser.uid].variants[currentVariantId].wrongCount = wrong;
     
     saveProgressToLocalStorage();
-    
-    // Показываем результаты
     showResults(totalScore, correct, wrong, detailed);
     renderVariantsList();
   };
 }
 
-// Показ результатов
 function showResults(score, correct, wrong, detailed) {
   elements.questionsContainer.style.display = 'none';
   elements.finishSection.style.display = 'none';
@@ -949,9 +864,9 @@ function showResults(score, correct, wrong, detailed) {
   elements.resultsSection.style.display = 'block';
   
   elements.scorePercent.textContent = `${score}%`;
-  elements.correctCount.textContent = `${correct} правильных`;
-  elements.wrongCount.textContent = `${wrong} неправильных`;
-  elements.totalScore.textContent = `${correct}/${TOTAL_QUESTIONS} баллов`;
+  elements.correctCount.textContent = `${correct} дұрыс`;
+  elements.wrongCount.textContent = `${wrong} қате`;
+  elements.totalScore.textContent = `${correct}/${TOTAL_QUESTIONS} балл`;
   
   // Детальный разбор
   elements.detailedResults.innerHTML = '';
@@ -966,27 +881,23 @@ function showResults(score, correct, wrong, detailed) {
     div.innerHTML = `
       <div class="result-question">${idx + 1}. ${item.question.text}</div>
       <div class="result-answers">
-        <div><strong>Ваш ответ:</strong> ${selectedTexts.join(', ') || 'Нет ответа'}</div>
-        <div><strong>Правильный:</strong> ${correctTexts.join(', ')}</div>
+        <div><strong>Сіздің жауабыңыз:</strong> ${selectedTexts.join(', ') || 'Жауап жоқ'}</div>
+        <div><strong>Дұрыс жауап:</strong> ${correctTexts.join(', ')}</div>
       </div>
     `;
     
     elements.detailedResults.appendChild(div);
   });
   
-  // Прокрутка к результатам
   elements.resultsSection.scrollIntoView({ behavior: 'smooth' });
 }
 
-// Возврат к варианту
 if (elements.backToVariantBtn) {
   elements.backToVariantBtn.onclick = () => {
     elements.resultsSection.style.display = 'none';
     elements.questionsContainer.style.display = 'flex';
     elements.finishSection.style.display = 'block';
     elements.resetVariantBtn.parentElement.style.display = 'block';
-    
-    // Прокрутка к началу
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 }
@@ -998,8 +909,8 @@ if (elements.resetVariantBtn) {
     if (!currentUser || !currentVariantId) return;
     
     const confirmReset = confirm(
-      '⚠️ Вы уверены, что хотите сбросить этот вариант?\\n\\n' +
-      'Все ответы будут удалены безвозвратно.'
+      '⚠️ Бұл нұсқаны қалпына келтіру керек пе?\\n\\n' +
+      'Барлық жауаптар жойылады.'
     );
     
     if (!confirmReset) return;
@@ -1007,7 +918,6 @@ if (elements.resetVariantBtn) {
     const progress = getVariantProgress(currentVariantId);
     const resetCount = (progress?.resetCount || 0) + 1;
     
-    // Сбрасываем прогресс
     const progressRef = doc(db, COLLECTIONS.PROGRESS, currentUser.uid);
     await updateDoc(progressRef, {
       [`variants.${currentVariantId}`]: {
@@ -1023,7 +933,6 @@ if (elements.resetVariantBtn) {
       updatedAt: serverTimestamp()
     });
     
-    // Обновляем локальный прогресс
     currentProgress[currentUser.uid].variants[currentVariantId] = {
       answers: {},
       completed: false,
@@ -1036,16 +945,12 @@ if (elements.resetVariantBtn) {
     };
     
     saveProgressToLocalStorage();
-    
-    // Перерисовываем
     renderQuestions(variants[currentVariantId]);
     updateProgressUI();
     renderVariantsList();
-    
-    // Прокрутка к началу
     window.scrollTo({ top: 0, behavior: 'smooth' });
     
-    alert('✅ Вариант сброшен. Начните заново.');
+    alert('✅ Нұсқа қалпына келтірілді.');
   };
 }
 
@@ -1059,14 +964,13 @@ if (elements.toggleVariantsBtn) {
   };
 }
 
-/* ====== AUTH STATE LISTENER ====== */
+/* ====== AUTH STATE ====== */
 
 onAuthStateChanged(auth, async (user) => {
   if (user) {
     currentUser = user;
     elements.authOverlay.style.display = 'none';
     
-    // Проверяем доступ
     const userDoc = await getDoc(doc(db, COLLECTIONS.USERS, user.uid));
     
     if (!userDoc.exists() || !userDoc.data().allowed) {
@@ -1082,11 +986,11 @@ onAuthStateChanged(auth, async (user) => {
       currentProgress[user.uid] = localProgress;
     }
     
-    // Загружаем банк вопросов и варианты
-    await loadQuestionsBank();
-    
-    // Подписываемся на обновления прогресса
+    // Подписываемся на прогресс
     subscribeToProgress(user.uid);
+    
+    // Загружаем вопросы
+    await loadQuestionsBank();
     
     // Админ панель
     if (user.email === ADMIN_EMAIL) {
@@ -1095,6 +999,10 @@ onAuthStateChanged(auth, async (user) => {
     
   } else {
     currentUser = null;
+    if (userUnsubscribe) {
+      userUnsubscribe();
+      userUnsubscribe = null;
+    }
     elements.authOverlay.style.display = 'flex';
     elements.waitOverlay.style.display = 'none';
     elements.welcomeSection.style.display = 'block';
@@ -1102,20 +1010,20 @@ onAuthStateChanged(auth, async (user) => {
   }
 });
 
-// Подписка на прогресс
 function subscribeToProgress(userId) {
   const progressRef = doc(db, COLLECTIONS.PROGRESS, userId);
   
-  onSnapshot(progressRef, (doc) => {
+  userUnsubscribe = onSnapshot(progressRef, (doc) => {
     if (doc.exists()) {
       currentProgress[userId] = doc.data();
       
-      // Если активен вариант, обновляем UI
       if (currentVariantId) {
         updateProgressUI();
         renderVariantsList();
       }
     }
+  }, (error) => {
+    console.error('Ошибка подписки на прогресс:', error);
   });
 }
 
@@ -1129,25 +1037,18 @@ function setupAdminPanel() {
     document.body.appendChild(adminContainer);
   }
   
-  adminContainer.innerHTML = `
-    <button id="adminBtn">👑 Админ</button>
-  `;
-  
+  adminContainer.innerHTML = `<button id="adminBtn">👑 Админ</button>`;
   document.getElementById('adminBtn').onclick = showAdminPanel;
 }
 
 async function showAdminPanel() {
-  // Создаём модальное окно
   const modal = document.createElement('div');
   modal.className = 'admin-modal';
   modal.innerHTML = `
     <div class="admin-modal-content">
       <button class="close-modal">✕</button>
-      <h3>👥 Управление пользователями</h3>
-      <div id="adminLoading">
-        <div class="spinner"></div>
-        <p>Загрузка...</p>
-      </div>
+      <h3>👥 Пайдаланушыларды басқару</h3>
+      <div id="adminLoading"><div class="spinner"></div><p>Жүктелуде...</p></div>
       <div id="adminUsersList" style="display: none;"></div>
     </div>
   `;
@@ -1158,17 +1059,12 @@ async function showAdminPanel() {
     document.body.removeChild(modal);
   };
   
-  // Загружаем пользователей
   try {
     const usersSnapshot = await getDocs(collection(db, COLLECTIONS.USERS));
     const users = [];
     
     for (const docSnap of usersSnapshot.docs) {
-      const data = docSnap.data();
-      users.push({
-        id: docSnap.id,
-        ...data
-      });
+      users.push({ id: docSnap.id, ...docSnap.data() });
     }
     
     const listDiv = modal.querySelector('#adminUsersList');
@@ -1181,13 +1077,11 @@ async function showAdminPanel() {
       <div class="admin-user-item">
         <strong>${u.email}</strong>
         <span class="admin-status ${u.allowed ? 'status-allowed' : 'status-pending'}">
-          ${u.allowed ? '✅ Доступ открыт' : '⏳ Ожидание'}
+          ${u.allowed ? '✅ Рұқсат берілді' : '⏳ Күтілуде'}
         </span>
-        <br>
-        <small>Пароль: ${u.currentPassword || 'Не установлен'}</small>
-        <br>
+        <br><small>Құпия сөз: ${u.currentPassword || 'Жоқ'}</small>
         <button onclick="toggleUserAccess('${u.id}', ${!u.allowed})">
-          ${u.allowed ? 'Закрыть доступ' : 'Открыть доступ'}
+          ${u.allowed ? 'Рұқсатты жабу' : 'Рұқсат беру'}
         </button>
       </div>
     `).join('');
@@ -1197,15 +1091,14 @@ async function showAdminPanel() {
   }
 }
 
-// Глобальная функция для переключения доступа
 window.toggleUserAccess = async function(userId, newAccess) {
   try {
     await updateDoc(doc(db, COLLECTIONS.USERS, userId), {
       allowed: newAccess
     });
-    alert(`Доступ ${newAccess ? 'открыт' : 'закрыт'}`);
+    alert(`Рұқсат ${newAccess ? 'берілді' : 'жабылды'}`);
   } catch (e) {
-    alert('Ошибка: ' + e.message);
+    alert('Қате: ' + e.message);
   }
 };
 
@@ -1217,26 +1110,26 @@ function createWhatsAppButton() {
   btn.innerHTML = '💬';
   btn.href = 'https://wa.me/77718663556?text=Сәлем, биология тест бойынша сұрақ бар';
   btn.target = '_blank';
-  btn.title = 'Написать в WhatsApp';
+  btn.title = 'WhatsApp арқылы жазу';
   document.body.appendChild(btn);
 }
 
 document.addEventListener('DOMContentLoaded', createWhatsAppButton);
 
-/* ====== SERVICE WORKER (для офлайн) ====== */
+/* ====== SERVICE WORKER ====== */
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(e => {
-    console.log('Service Worker не зарегистрирован:', e);
+    console.log('SW не зарегистрирован:', e);
   });
 }
 
-console.log('🎓 Система вариантов тестов загружена');
+console.log('🎓 Биология тесттер жүйесі жүктелді');
 '''
 
-# Сохраняем в файл
 with open('/mnt/kimi/output/app.js', 'w', encoding='utf-8') as f:
     f.write(js_content)
 
-print("✅ app.js создан")
-print(f"Размер файла: {len(js_content)} символов")
+print("✅ app.js обновлён с поддержкой вашего JSON формата")
+print("✅ Добавлена офлайн-персистентность Firestore")
+print("✅ Добавлена поддержка казахского языка")
