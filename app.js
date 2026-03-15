@@ -512,66 +512,82 @@ async function loadQuestionsFromGithub() {
   }
 }
 
-// ===== VARIANTS =====
-// ===== ВАРИАНТЫ - ИСПРАВЛЕНО: всегда 20 вариантов =====
 function generateVariantList() {
-  // Убираем ограничение по количеству вопросов - всегда 20 вариантов
-  // Вопросы будут повторяться если не хватает уникальных
+  const maxSingle = singleQuestions.length;
+  const maxMulti = multipleQuestions.length;
+  
+  // Максимум вариантов без повторов
+  const maxVariantsSingle = Math.floor(maxSingle / SINGLE_COUNT);
+  const maxVariantsMulti = Math.floor(maxMulti / MULTIPLE_COUNT);
+  
+  // Берем минимум, но если одного типа мало — адаптируем
+  let maxVariants = Math.min(maxVariantsSingle, maxVariantsMulti);
+  
+  // Если не хватает многовыборочных, но много одновыборочных
+  if (maxVariants === 0 && maxSingle >= SINGLE_COUNT) {
+    maxVariants = Math.floor(maxSingle / SINGLE_COUNT);
+  }
+  // Если не хватает одновыборочных, но много многовыборочных  
+  else if (maxVariants === 0 && maxMulti >= MULTIPLE_COUNT) {
+    maxVariants = Math.floor(maxMulti / MULTIPLE_COUNT);
+  }
+  
+  // Минимум 1 вариант, максимум 20
+  maxVariants = Math.max(1, Math.min(maxVariants, 20));
+  
   VARIANTS_LIST = [];
-  for (let i = 1; i <= 20; i++) {
+  for (let i = 1; i <= maxVariants; i++) {
     VARIANTS_LIST.push(`${i}-нұсқа`);
   }
+  
+  console.log(`Создано ${VARIANTS_LIST.length} вариантов (доступно: ${maxSingle} одиночных, ${maxMulti} множественных)`);
 }
+
 
 // ===== ГЕНЕРАЦИЯ ВАРИАНТА - ИСПРАВЛЕНО: циклическое использование вопросов =====
 function generateVariant(vid) {
-  // Используем вопросы циклически если не хватает уникальных
-  const usedOffset = (parseInt(vid) - 1) * (SINGLE_COUNT + MULTIPLE_COUNT);
+  const variantIndex = parseInt(vid) - 1;
   
-  let availSingle = [...singleQuestions];
-  let availMulti = [...multipleQuestions];
+  // Вычисляем сколько вопросов можем взять
+  let singleCount = SINGLE_COUNT;
+  let multiCount = MULTIPLE_COUNT;
   
-  // Перемешиваем с seed на основе номера варианта для консистентности
-  const seedRandom = (seed) => {
-    let x = Math.sin(seed++) * 10000;
-    return x - Math.floor(x);
-  };
+  const availableSingle = singleQuestions.length - (variantIndex * SINGLE_COUNT);
+  const availableMulti = multipleQuestions.length - (variantIndex * MULTIPLE_COUNT);
   
-  const shuffleWithSeed = (arr, seed) => {
-    const a = [...arr];
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(seedRandom(seed + i) * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-  };
+  // Если не хватает стандартного количества — берем сколько есть
+  if (availableSingle < SINGLE_COUNT) {
+    singleCount = Math.max(0, availableSingle);
+  }
+  if (availableMulti < MULTIPLE_COUNT) {
+    multiCount = Math.max(0, availableMulti);
+  }
   
-  // Перемешиваем на основе номера варианта
-  const seed = parseInt(vid) * 12345;
-  availSingle = shuffleWithSeed(availSingle, seed);
-  availMulti = shuffleWithSeed(availMulti, seed + 999);
+  // Если совсем нет вопросов одного типа, но есть другие — делаем вариант только из доступных
+  if (singleCount === 0 && multiCount === 0) {
+    // Берем остатки
+    singleCount = Math.min(SINGLE_COUNT, singleQuestions.length);
+    multiCount = Math.min(MULTIPLE_COUNT, multipleQuestions.length);
+  }
   
-  // Берем нужное количество (с повторением если мало вопросов)
-  const getQuestions = (pool, count) => {
-    const result = [];
-    while (result.length < count) {
-      result.push(...pool);
-    }
-    return result.slice(0, count);
-  };
+  // Берем вопросы по порядку (без перемешивания между вариантами)
+  const startSingle = variantIndex * SINGLE_COUNT;
+  const startMulti = variantIndex * MULTIPLE_COUNT;
   
-  const selSingle = getQuestions(availSingle, SINGLE_COUNT);
-  const selMulti = getQuestions(availMulti, MULTIPLE_COUNT);
+  const selSingle = singleQuestions.slice(startSingle, startSingle + singleCount);
+  const selMulti = multipleQuestions.slice(startMulti, startMulti + multiCount);
   
+  // Перемешиваем ответы внутри вопроса
   const process = (q, idx) => {
     const order = shuffle(q.answers.map((_, i) => i));
     return {
-      id: `${vid}_${q.id}_${idx}`,
+      id: `${vid}_${q.id}`,
       originalId: q.id,
       text: q.text,
       answers: order.map(i => q.answers[i]),
-      correct: q.correct.map(c => order.indexOf(c)),
+      correct: q.correct.map(c => order.indexOf(c)).sort((a,b)=>a-b),
       isMultiple: q.isMultiple,
+      correctCount: q.correct.length, // Сохраняем количество правильных
       userAnswers: [],
       checked: false
     };
@@ -579,11 +595,60 @@ function generateVariant(vid) {
   
   return {
     id: vid,
-    questions: [...selSingle.map((q, i) => process(q, i)), ...selMulti.map((q, i) => process(q, i + SINGLE_COUNT))],
+    questions: [
+      ...selSingle.map((q, i) => process(q, i)), 
+      ...selMulti.map((q, i) => process(q, i + singleCount))
+    ],
     completed: false,
     score: 0,
-    maxScore: SINGLE_COUNT + MULTIPLE_COUNT * 2
+    maxScore: (singleCount * 1) + (multiCount * 2), // Одиночные = 1 балл, множественные = 2
+    singleCount: singleCount,
+    multiCount: multiCount
   };
+}
+
+// ===== НОВАЯ СИСТЕМА ПОДСЧЕТА БАЛЛОВ =====
+function calculateQuestionScore(q) {
+  const correct = [...q.correct].sort((a,b) => a-b);
+  const user = [...q.userAnswers].sort((a,b) => a-b);
+  
+  // Одновыборочный вопрос
+  if (!q.isMultiple || correct.length === 1) {
+    // Должен быть ровно 1 ответ и он правильный
+    if (user.length === 1 && user[0] === correct[0]) {
+      return 2; // Правильно = 2 балла
+    }
+    return 0; // Неправильно или несколько ответов = 0
+  }
+  
+  // Многовыборочный вопрос (2 и более правильных ответов)
+  const totalCorrect = correct.length;
+  const userCorrect = user.filter(u => correct.includes(u)).length;
+  const userWrong = user.filter(u => !correct.includes(u)).length;
+  const missedCorrect = totalCorrect - userCorrect;
+  
+  // Все правильно, без лишних = 2 балла
+  if (userCorrect === totalCorrect && userWrong === 0 && user.length === totalCorrect) {
+    return 2;
+  }
+  
+  // Ровно одна ошибка (лишний ИЛИ пропущенный, но не оба)
+  const totalErrors = userWrong + missedCorrect;
+  if (totalErrors === 1) {
+    return 1;
+  }
+  
+  // Все остальное = 0 баллов
+  return 0;
+}
+
+// ===== ПРОВЕРКА ПРАВИЛЬНОСТИ (для отображения) =====
+function isCorrect(q) {
+  return calculateQuestionScore(q) === 2; // Полностью правильно только при 2 баллах
+}
+
+function isPartiallyCorrect(q) {
+  return calculateQuestionScore(q) === 1; // Частично правильно
 }
 
 // ===== STATE =====
@@ -715,15 +780,27 @@ function renderContent() {
   el.innerHTML = `
     <div class="variant-header">
       <h2>${currentVariant}</h2>
-      <button onclick="resetVariant()">🔄 Қайта бастау</button>
+      <div>
+        <span style="color:#666; margin-right:15px;">
+          ${st.singleCount} бір жауапты + ${st.multiCount} көп жауапты
+        </span>
+        <button onclick="resetVariant()">🔄 Қайта бастау</button>
+      </div>
     </div>
     <div class="questions">
-      ${st.questions.map((q, i) => `
-        <div class="q-card ${q.checked ? (isCorrect(q) ? 'right' : 'wrong') : ''}" id="q${i}">
+      ${st.questions.map((q, i) => {
+        const score = q.checked ? calculateQuestionScore(q) : null;
+        let cardClass = '';
+        if (q.checked) {
+          cardClass = score === 2 ? 'right' : score === 1 ? 'partial' : 'wrong';
+        }
+        
+        return `
+        <div class="q-card ${cardClass}" id="q${i}">
           <div class="q-top">
             <span class="num">${i+1}</span>
-            <span class="type">${q.isMultiple?'☑️ Көп жауапты':'◉ Бір жауапты'}</span>
-            ${q.checked ? `<span class="res">${isCorrect(q)?'✓ Дұрыс':'✗ Қате'}</span>` : ''}
+            <span class="type">${q.isMultiple ? `☑️ Көп жауапты (${q.correct.length} дұрыс)` : '◉ Бір жауапты'}</span>
+            ${q.checked ? `<span class="res">${score === 2 ? '✓ 2 балл' : score === 1 ? '◐ 1 балл' : '✗ 0 балл'}</span>` : ''}
           </div>
           <div class="q-txt">${escapeHtml(q.text)}</div>
           <div class="ans-list">
@@ -737,16 +814,14 @@ function renderContent() {
             `).join('')}
           </div>
         </div>
-      `).join('')}
+      `}).join('')}
     </div>
     
-    <!-- ИСПРАВЛЕНО: Кнопка завершения теперь всегда в DOM, но скрыта/показана через CSS -->
     <div class="finish-box" style="${allAnswered ? 'display:block;' : 'display:none;'}">
       <p>Барлық сұрақтарға жауап бердіңіз!</p>
       <button onclick="finishVariant()">🏁 Тестті аяқтау</button>
     </div>
     
-    <!-- Прогресс для незавершенных -->
     ${!allAnswered ? `
       <div class="progress-box" style="text-align:center; padding:20px; background:white; border-radius:12px; margin-top:20px;">
         <p>Жауап берілді: <strong>${answered}/${st.questions.length}</strong></p>
@@ -800,7 +875,7 @@ window.finishVariant = function() {
   
   st.questions.forEach(q => {
     q.checked = true;
-    if (isCorrect(q)) st.score += q.isMultiple ? 2 : 1;
+    st.score += calculateQuestionScore(q);
   });
   
   st.completed = true;
@@ -810,9 +885,21 @@ window.finishVariant = function() {
   showNotification('Тест аяқталды!', 'success');
 };
 
+// ===== ОТОБРАЖЕНИЕ РЕЗУЛЬТАТОВ =====
 function renderResults(el, st) {
-  const pct = Math.round((st.score/st.maxScore)*100);
-  const correct = st.questions.filter(isCorrect).length;
+  const pct = Math.round((st.score/st.maxScore)*100) || 0;
+  
+  // Считаем по категориям
+  let fullCorrect = 0;  // 2 балла
+  let partialCorrect = 0; // 1 балл
+  let wrong = 0; // 0 баллов
+  
+  st.questions.forEach(q => {
+    const score = calculateQuestionScore(q);
+    if (score === 2) fullCorrect++;
+    else if (score === 1) partialCorrect++;
+    else wrong++;
+  });
   
   el.innerHTML = `
     <div class="res-card">
@@ -825,20 +912,46 @@ function renderResults(el, st) {
       </div>
       <div class="det">
         <div class="big">${st.score} / ${st.maxScore}</div>
-        <div>✓ Дұрыс: ${correct} / ${st.questions.length}</div>
-        <div>✗ Қате: ${st.questions.length - correct}</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin:15px 0; font-size:14px;">
+          <div style="background:#e8f5e9; padding:10px; border-radius:8px;">
+            <div style="color:#4caf50; font-weight:bold; font-size:20px;">${fullCorrect}</div>
+            <div>Толық дұрыс<br>(2 балл)</div>
+          </div>
+          <div style="background:#fff3e0; padding:10px; border-radius:8px;">
+            <div style="color:#ff9800; font-weight:bold; font-size:20px;">${partialCorrect}</div>
+            <div>Жартылай дұрыс<br>(1 балл)</div>
+          </div>
+          <div style="background:#ffebee; padding:10px; border-radius:8px;">
+            <div style="color:#f44336; font-weight:bold; font-size:20px;">${wrong}</div>
+            <div>Қате<br>(0 балл)</div>
+          </div>
+        </div>
+        <div style="font-size:12px; color:#666; margin-top:10px;">
+          Бір жауапты: ${st.singleCount} сұрақ (2 балл)<br>
+          Көп жауапты: ${st.multiCount} сұрақ (2 балл)
+        </div>
       </div>
       <button onclick="resetVariant()">🔄 Вариантты қайта бастау</button>
     </div>
     <div class="res-list">
-      ${st.questions.map((q,i) => `
-        <div class="res-item ${isCorrect(q)?'ok':'bad'}">
-          <div class="h"><span>${i+1}</span>${isCorrect(q)?'✓':'✗'}</div>
+      ${st.questions.map((q,i) => {
+        const score = calculateQuestionScore(q);
+        let statusClass = score === 2 ? 'ok' : score === 1 ? 'partial' : 'bad';
+        let statusIcon = score === 2 ? '✓' : score === 1 ? '◐' : '✗';
+        let scoreText = score === 2 ? '2 балл' : score === 1 ? '1 балл' : '0 балл';
+        
+        return `
+        <div class="res-item ${statusClass}">
+          <div class="h">
+            <span>${i+1}</span>
+            ${statusIcon} ${scoreText}
+          </div>
           <div class="q">${escapeHtml(q.text)}</div>
           <div class="a">Сіз: ${q.userAnswers.map(j=>escapeHtml(q.answers[j])).join(', ')||'-'}</div>
           <div class="c">Дұрыс: ${q.correct.map(j=>escapeHtml(q.answers[j])).join(', ')}</div>
+          ${score === 1 ? `<div style="color:#ff9800; font-size:12px; margin-top:5px;">Бір қате бар (лишний немесе пропущенный)</div>` : ''}
         </div>
-      `).join('')}
+      `}).join('')}
     </div>
   `;
 }
